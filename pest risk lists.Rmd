@@ -1,0 +1,192 @@
+---
+title: "OPEP FNW Select Program Risks"
+author: "Dalon White"
+date: "2025-05-08"
+output: html_document
+
+params:
+  risk score constants
+  quarantine.pest.value: 0.5
+  uncategorized.pest.value: 0.25
+  nonquarantine.pest.value: 0
+  and those for pest program categories
+  caps.national.priority.pest.score: 1
+  opep.noncandidate.pest.score: .3  # Based on OPEP list cutoff of 10% major invader
+  ppq.program.pest.score: 1
+  ppq.select.agents.score: 1
+  
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages, include=FALSE}
+require(pacman)
+pacman::p_load(
+  tidyverse,
+  magrittr,
+  ggplot2,
+  DBI,
+  DT,
+  odbc,
+  lubridate,
+  readr
+  )
+```
+
+## Known high risk pests
+
+put together PPQ's known risks that extend beyond quarantine/non quarantine
+Intent is for chunks to be incorporated into port profiles as appropriate
+
+```{r load-and-prep-opep-data}
+##THE OPEP LIST IS NATIVELY FORMATTED WITH EXTRA LINES AND STUFF - IT HAS TO BE MANUALLY MANIPULATED TO FIT A STANDARD DATA FORMAT AND SAVED .CSV
+#Cynthia Landry stated that all the arthropod pests on the OPEP list will have genus/species names
+#Cynthia has an alterantive list she created that uses the OPEP name they use when completing it; she thought this might be more in line with the NIS names for all the pathogens, so this is the one we use. Cynthia is the owner of that and this file should be updated probably every 3 months but at least yearly
+
+files.in.opep = file.info(list.files(here::here('Inputs','Data','OPEP'), full.names = T))
+##gets the file with the last modified time
+opep.list = read.csv(rownames(files.in.opep)[which.max(files.in.opep$mtime)])
+#get rid of some of the characters encoded in the names
+opep.list$Scientific.name = iconv(opep.list$Scientific.name, "latin1", "ASCII", sub="")
+opep.list$Common.Name = iconv(opep.list$Common.Name, "latin1", "ASCII", sub="")
+opep.list = opep.list |>
+  mutate(Scientific.name=trimws(Scientific.name),
+         Common.Name=trimws(Common.Name),
+         Genus = NA,
+         Species = NA)
+
+opep.list = opep.list |> 
+  #extract genus name
+  mutate(Genus = case_when(
+    Model == 'Arthropod' ~ stringr::word(Scientific.name, 1),
+    Model == 'Pathogen' ~ NA,
+    .default= NA
+  )) |> 
+  #extract species name
+  mutate(Species = case_when(
+    Model == 'Arthropod' ~ stringr::word(Scientific.name, 2),
+    Model == 'Pathogen' ~ NA,
+    .default= NA
+  ))
+
+#arthropod genus and species (got to get rid of the NA's or else they will match in the next step)
+arth.genus.species = opep.list |> filter(Model=='Arthropod') |> 
+  filter(!Genus == '' & !Species=='') |> 
+  dplyr::select(Genus, Species)
+
+#scientific and common pathogen names
+path.sci.name = opep.list |> filter(Model=='Pathogen') |> 
+  pull(Scientific.name)
+path.comm.name = opep.list |> filter(Model=='Pathogen') |> 
+  filter(!Common.Name=='') |> 
+  pull(Common.Name)
+
+pest_impact_calc_func=function(high.impacts,mod.impacts){
+  (
+    (high.impacts*2) + mod.impacts) / 200
+}
+
+# determine quantification of impact for each OPEP pest and determine if the pest is in OPEP list ----
+opep.list.red = opep.list |>
+  #Remove lines that don't correspond to an organism
+  filter(!Scientific.name=='') |>
+  #If we don't have better information then just delete from list and it will default to a quarantine/non quarantine status
+  filter(!Predicted.pest.impact.in.US %in% c('N/A','Undetermined')) |>
+  mutate(Prob.pest.will.cause.high.impacts = parse_number(Prob.pest.will.cause.high.impacts),
+         Prob.pest.will.cause.mod.impacts = parse_number(Prob.pest.will.cause.mod.impacts),
+         Prob.pest.will.cause.low.impacts = parse_number(Prob.pest.will.cause.low.impacts)
+  ) |> 
+  #recalculate opep ranking
+  mutate(Predicted.pest.impact.in.US = pest_impact_calc_func(Prob.pest.will.cause.high.impacts,
+                                                             Prob.pest.will.cause.mod.impacts)
+  #        ) |> 
+  # #change name structure to match other data base
+  # dplyr::select(Scientific.name,Common.Name,Genus,Species,Predicted.pest.impact.in.US) |> 
+  # mutate(name.match=paste(Genus,Species,sep = ' ')) |> dplyr::select(-Genus,-Species)
+)
+
+
+#In the original version, I compare these lists to taxonomies in the inspection+commodity+diagnostic request (complete.records)
+# see ~line 661
+```
+Now need to see where `opep.list.red` fits in port profiles
+
+## Include program pest list
+
+```{r load-HLI-data}
+HLI.files.in.outputs = file.info(list.files(here::here('Inputs','Data','High and low impact pests'), full.names = T))
+##gets the file with the last modified time.. this should work well in a pipeline system
+HLI.dat = read_csv(
+  rownames(
+    #only look for .csv files
+    HLI.files.in.outputs |> filter(grepl('.csv',rownames(HLI.files.in.outputs)))
+    #now find the most recently modified
+  )[which.max(HLI.files.in.outputs$mtime)])
+HLI.dat = HLI.dat |> mutate(identify.by = case_when(
+  `Pest Type` %in% 'Plant Disease' ~ 'pathogen name',
+  str_detect(`Pest Scientific Name`,'. .') ~ 'genus and species',
+  .default = 'genus only'))
+
+#Quantify the risk score
+HLI.dat = HLI.dat |> mutate(HLI_score = case_when(
+  grepl('CAPS National Priority',Source) == T ~ caps.national.priority.pest.score,
+  grepl('OPEP Non-Candidate',Source) == T ~ opep.noncandidate.pest.score,
+  grepl('PPQ Program Pest',Source) == T ~ ppq.program.pest.score,
+  grepl('Select Agents',Source) == T ~ ppq.select.agents.score,
+  .default=0
+))
+
+HLI.split=split(HLI.dat,
+  HLI.dat$identify.by)
+# 
+# # Join each subset to A, customizing the join type for each group
+# HLI_joined_list <- lapply(HLI.split, function(subset) {
+#   if (subset$identify.by[1] == "pathogen name") {
+#     # After looking through the data, it appears the genus and species in both data sets would match
+#     merge(complete.records, subset,  by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+#           #keep the y in each
+#           by.y=c('Genus','Species'), all.y = TRUE)
+#     #determine which group it is by identifying the first entry in the identify.by column within the subset
+#   } else if (subset$identify.by[1] == "genus only") {
+#     # For this group, only the genus is identified in the high/low impact dataset.
+#     # Looking through the ARM records, when genus is identified, family is also identified
+#     #   see 
+#        #view(complete.records |> filter(!is.na(TAXONOMY_SPECIES)) |> count(TAXONOMY_FAMILY))
+#     merge(complete.records, subset, by.x=c('TAXONOMY_FAMILY','TAXONOMY_GENUS'),
+#           by.y=c('Family','Genus'), all.y = TRUE)
+#   } else {
+#     # the only other group is genus and species, so default to comparing genus and species
+#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+#           by.y=c('Genus','Species'), all.y=TRUE)
+#   }
+# })
+# 
+# # Combine the joined dataframes
+# # use dplyr::bind_rows instead of rbind because the matching columns rearrange the column order;
+# #   bind_rows will match column names instead of requiring the same order
+# HLI_final_df <- do.call(bind_rows, HLI_joined_list)
+# 
+# # #does it join correctly?
+# # complete.records |> left_join(final_df)
+# # #is it matching genus and species correctly? do they have the same name?
+# #  complete.records |> left_join(final_df) |> filter(!is.na(`Qualitative Impact Rating`)) |>
+# #    dplyr::select(TAXONOMY_GENUS,TAXONOMY_SPECIES,`Pest Scientific Name`)
+# # #has it duplicated anything?
+# # which(duplicated(complete.records) == TRUE) #this code works correctly, as evidenced by changing TRUE to FALSE
+# # #everything appears to be working correctly
+# 
+# complete.records = complete.records |> left_join(HLI_final_df) |> dplyr::select(
+#   #all of complete.records columns
+#   colnames(complete.records),
+#   #source of info, pest impact, and scientific name for completeness
+#   Source,
+#   `Qualitative Impact Rating`,
+#   `Pest Scientific Name`,
+#   HLI_score)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
