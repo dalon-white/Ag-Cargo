@@ -5,16 +5,15 @@ date: "2025-05-08"
 output: html_document
 
 params:
-  risk score constants
   quarantine.pest.value: 0.5
   uncategorized.pest.value: 0.25
   nonquarantine.pest.value: 0
-  and those for pest program categories
   caps.national.priority.pest.score: 1
   opep.noncandidate.pest.score: .3  # Based on OPEP list cutoff of 10% major invader
   ppq.program.pest.score: 1
   ppq.select.agents.score: 1
-  
+  begin_date: 2019-10-01
+  end_date: 2025-04-01
 
 ---
 
@@ -36,6 +35,18 @@ pacman::p_load(
   )
 ```
 
+```{r get vars for global env from yaml header}
+quarantine.pest.value <- params$quarantine.pest.value
+uncategorized.pest.value <- params$uncategorized.pest.value
+nonquarantine.pest.value <- params$nonquarantine.pest.value
+caps.national.priority.pest.score <- params$caps.national.priority.pest.score
+opep.noncandidate.pest.score <- params$opep.noncandidate.pest.score # Based on OPEP list cutoff of 10% major invader
+ppq.program.pest.score <- params$ppq.program.pest.score
+ppq.select.agents.score <- params$ppq.select.agents.score
+
+begin_date <- params$begin_date
+end_date <- params$end_date
+```
 ## Known high risk pests
 
 put together PPQ's known risks that extend beyond quarantine/non quarantine
@@ -114,6 +125,90 @@ opep.list.red = opep.list |>
 ```
 Now need to see where `opep.list.red` fits in port profiles
 
+
+
+```{r load-FNW-data}
+FNW.files.in.outputs = file.info(list.files(here::here('Inputs','Data','FNW'), full.names = T))
+##gets the file with the last modified time.. this should work well in a pipeline system
+FNW.dat <- read_csv(
+  rownames(
+    #only look for .csv files
+    FNW.files.in.outputs |> filter(grepl('.csv',rownames(FNW.files.in.outputs)))
+    #now find the most recently modified
+    )[which.max(FNW.files.in.outputs$mtime)])
+
+#Taxonomies are coming in as 0's instead of NAs. Some columns are all zeroes so reading as numerical.
+FNW.dat <- FNW.dat |>
+  mutate(across(starts_with("Taxonomy"), as.character)) |> 
+  mutate(across(starts_with("Taxonomy"), ~na_if(.,"0")))
+
+# Quantify risk -----
+
+#fix 'N/A's
+FNW.dat$`% Suitable Reported` = replace(FNW.dat$`% Suitable Reported`,FNW.dat$`% Suitable Reported`=='N/A',NA)
+FNW.dat$`% Suitable Reported` = as.numeric(FNW.dat$`% Suitable Reported`)
+FNW.dat = FNW.dat |> mutate(FNW_score =
+                    #risk score based on likelihood its a major invader
+                    (`% Major Invader`
+                  +
+                    #include minor invader to move risk away from 0 faster
+                    (0.5*`% Minor Invader`))
+                  ) |> 
+  #adjust to a 0 - 1 scale
+  mutate(FNW_score = FNW_score/100) |> 
+  #modified by how much suitable area it has already covered
+  mutate(FNW_score = case_when(
+    # if % suitable area is NA then don't do anything
+    is.na(`% Suitable Reported`) ~ FNW_score,
+    # else if it is a number then adjust the risk by the amount of habitable space it already covers
+    .default = FNW_score*(1-(`% Suitable Reported`/100))
+  ))
+
+# #Looking at the cutoffs for min and max values, it looks like 'Low' is % major invader ~0-10%, Mod is % Major Invader ~11-50%, and High is %Major Invader ~ >50%
+# FNW.dat |> dplyr::select(`Name in ARM`,`WRA Risk Result`,`% Major Invader`,`% Minor Invader`) |> filter(!is.na(`WRA Risk Result`)) |> group_by(`WRA Risk Result`) |> 
+#   slice_max(`% Major Invader`,n=1)
+# FNW.dat |> dplyr::select(`Name in ARM`,`WRA Risk Result`,`% Major Invader`,`% Minor Invader`) |> filter(!is.na(`WRA Risk Result`)) |> group_by(`WRA Risk Result`) |>
+#   slice_min(`% Major Invader`,n=1)
+### Nevermind, ignore the above - see next line
+#Per conversation (12/4/24) with Leah, who consulted her notes, Tony suggested assigning risk  similarly to other quarantine pests regardless of the qualitative rating assigned
+
+#if no WRA assessment, assign it a quarantine rank value
+FNW.dat = FNW.dat |> mutate(FNW_score = case_when(
+  is.na(`% Major Invader`) ~ quarantine.pest.value,
+  .default = FNW_score
+))
+
+
+# Merge with records -----
+FNW.split = split(FNW.dat,
+                  FNW.dat$`Taxon Unit Type`)
+
+## Below is how I joined the risk data to actual rows of inspection/pest interceptions. This will probably have to happen with diagnostic results table, now.
+
+# 
+# #The following connected it by taxonomy 
+# FNW_joined_list <- lapply(FNW.split, function(subset) {
+#   if (subset$`Taxon Unit Type`[1] == "Genus") {
+#     # For genus only, match genus and family
+#     merge(complete.records, subset,  by.x=c('TAXONOMY_FAMILY','TAXONOMY_GENUS'),
+#           #keep the y in each
+#           by.y=c('Taxonomy Family','Taxonomy Genus'), all.y = TRUE)
+#     #determine which group it is by identifying the first entry in the identify.by column within the subset
+#   } else if (subset$`Taxon Unit Type`[1] == "Species") {
+#     # For species-level, identify by genus and smpecies
+#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+#           by.y=c('Taxonomy Genus','Taxonomy Species'), all.y = TRUE)
+#   } else if (subset$`Taxon Unit Type`[1] == "Subspecies") {
+#     # For subspecies-level, identify by genus, species, and subspecies
+#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES','TAXONOMY_SUBSPECIES'),
+#           by.y=c('Taxonomy Genus','Taxonomy Species','Taxonomy Subspecies'), all.y = TRUE)
+#   } else {
+#     # the last group is variety but these are only identified to genus/species in the FNW list, so just keep the genus/species combination
+#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+#           by.y=c('Taxonomy Genus','Taxonomy Species'), all.y=TRUE)
+#   }
+# })
+```
 ## Include program pest list
 
 ```{r load-HLI-data}
@@ -141,7 +236,11 @@ HLI.dat = HLI.dat |> mutate(HLI_score = case_when(
 
 HLI.split=split(HLI.dat,
   HLI.dat$identify.by)
-# 
+
+
+## Below is how I joined the risk data to actual rows of inspection/pest interceptions. This will probably have to happen with diagnostic results table, now.
+
+
 # # Join each subset to A, customizing the join type for each group
 # HLI_joined_list <- lapply(HLI.split, function(subset) {
 #   if (subset$identify.by[1] == "pathogen name") {
@@ -189,4 +288,198 @@ HLI.split=split(HLI.dat,
 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r query-pest-diagnostics}
+#function for connecting to database####
+connect_db <- function(database) {
+  DBI::dbConnect(
+                 odbc::odbc(),
+                 .connection_string =
+"Driver=SQL Server;
+                       Server=AAP00VA3PPQSQL0\\MSSQLSERVER,1433;
+                        Database=PPQ_AQI_ARMDMV2;
+trusted_connection=yes")
+}
+#connection to database
+dbconn <- connect_db(database=db)
+
+mvw_diagnostic_results <- tbl(
+  db_conn,
+  sql("select TOP 1000 * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
+)
+
+df_diagnostic_results <- mvw_diagnostic_results %>% 
+  filter(
+    INSPECTION_DATE >= begin_date,
+    INSPECTION_DATE <= end_date,
+    DETERMINATION_TYPE == 'Final ID',
+    SUBCATEGORY %in% c("CBP", "PIS", "SITC", "Non-PIS PPQ"),
+    !is.na(PEST_TAXONOMIC_NAME)
+  ) %>% 
+  collect()
+```
+
+```{r correct query_pest_diagnostics}
+#Final ID are repeated, at least because of different life stages of the same pest
+
+
+# #replaced the below function with a flexible one
+# get.determinations = function(connection,determ.ids) {
+#   tbl(connection, sql( "SELECT TOP 100000
+#                        *
+#                        FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[SYS2_BRG_DIAGNOSTIC_DETERMINATION]")) |> 
+#     #    filter(ID %in% determ.ids) |> 
+#     dplyr::select(
+#       ID,
+#       DIAGNOSTIC_REQUEST_ID,
+#       PEST_TAXON_ID,
+#       PEST_TAXON_SIMPLE_NAME,
+#       PEST_TAXONOMIC_NAME,
+#       QUARANTINE_STATUS_CONUS,
+#       QUARANTINE_STATUS_HAWAII,
+#       QUARANTINE_STATUS_PUERTO_RICO,
+#       ID_AUTHORITY,
+#       DETERMINATION_TYPE_ID,
+#       DETERMINED_BY_GROUP_ID,
+#       DETERMINATION_DATETIME
+#     ) |> rename("DIAGNOSTIC_DETERMINATION_ID" = "ID") |> 
+#     collect()
+# }
+
+
+#call diagnostic determination data; written flexibly because QUARANTINE_STATUS_MAINLAND just chagned to QUARANTINE_STATUS_CONUS and it differs by table
+get.determinations <- function(connection) {
+  # First, get all columns to avoid SQL errors if column names change
+  result <- tbl(connection, sql("SELECT TOP 100000
+                       *
+                       FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[SYS2_BRG_DIAGNOSTIC_DETERMINATION]")) |> 
+    collect()
+  
+  # Get the actual column names from the retrieved data
+  actual_cols <- colnames(result)
+  
+  # Define mandatory columns we need
+  base_cols <- c(
+    "ID",
+    "DIAGNOSTIC_REQUEST_ID",
+    "PEST_TAXON_ID",
+    "PEST_TAXON_SIMPLE_NAME",
+    "PEST_TAXONOMIC_NAME",
+    "ID_AUTHORITY",
+    "DETERMINATION_TYPE_ID",
+    "DETERMINED_BY_GROUP_ID",
+    "DETERMINATION_DATETIME",
+    "QUARANTINE_STATUS_HAWAII",
+    "QUARANTINE_STATUS_PUERTO_RICO"
+  )
+  
+  # Check which quarantine status columns exist and add them
+  quarantine_mainland_col <- NULL
+  if ("QUARANTINE_STATUS_MAINLAND" %in% actual_cols) {
+    quarantine_mainland_col <- "QUARANTINE_STATUS_MAINLAND"
+  } else if ("QUARANTINE_STATUS_CONUS" %in% actual_cols) {
+    quarantine_mainland_col <- "QUARANTINE_STATUS_CONUS"
+  }
+  
+  # Create the final column selection list
+  select_cols <- c(base_cols, quarantine_mainland_col)
+  select_cols <- select_cols[!is.null(select_cols)]
+  
+  # Select the needed columns
+  result <- result |> 
+    dplyr::select(all_of(select_cols)) |> 
+    rename("DIAGNOSTIC_DETERMINATION_ID" = "ID")
+  
+  # If needed, standardize column names for downstream code
+  if (!is.null(quarantine_mainland_col) && quarantine_mainland_col == "QUARANTINE_STATUS_MAINLAND") {
+    result <- result |> rename("QUARANTINE_STATUS_CONUS" = "QUARANTINE_STATUS_MAINLAND")
+  }
+  
+  return(result)
+}
+
+diag.determ.records = get.determinations(connection=db_conn) |> 
+  filter(DIAGNOSTIC_DETERMINATION_ID %in% (df_diagnostic_results |> pull(DIAGNOSTIC_DETERMINATION_ID)))
+
+df_diagnostic_results = df_diagnostic_results |> left_join(diag.determ.records,by=intersect(colnames(df_diagnostic_results),colnames(diag.determ.records))) 
+
+parse_final_determination = function(data) {
+  data |> 
+    group_by(DIAGNOSTIC_REQUEST_ID) |> 
+    #Andy Carmichael says if that the most recent "DETERMINATION_CREATED_DATETIME" should be the most accurate, with very rare exceptions.  (The only time I can think of is if there was a molecular ID request, and it failed.)   In that case there DETERM_NOT_POSS_FLAG should be flagged.  
+    #Filter for rows that are not a failed diagnostic determination
+    dplyr::filter(is.na(DIAGNOSTIC_DETERMINATION_NOT_POSSIBLE_REASON)) |> 
+    #Filter the determination type - final has the highest TYPE_ID number
+    dplyr::filter(DETERMINATION_TYPE_ID==max(DETERMINATION_TYPE_ID)) |> 
+    #Filter for who ID'd it - the group_ID is a hierarchy of expertise, so take the max ID
+    dplyr::filter(DETERMINED_BY_GROUP_ID == max(DETERMINED_BY_GROUP_ID)) |> 
+    #The most recent is in practice the most correct - sometimes a final ID will be corrected at a later date, or someone will review for training or spot checking
+    dplyr::filter(DETERMINATION_DATETIME == max(DETERMINATION_DATETIME))
+}
+
+df_diagnostic_results <- parse_final_determination(df_diagnostic_results)
+
+#Left off here 5/8.
+#The above code is working. it's flexible and solves for MAINLAND vs CONUS
+#it also integrates with the DART's diagnostic results table but parses using our approach as well.
+
+```
+Next step is to assess the df_diagnostic_results taxonomies for matches across FNW, HLI, or OPEP
+
+```{r assign_pest_score_to_each_record}
+#Check later, but I think the quarantine status might be coming from CONUS; use my code to assign quarantine status based on port location
+
+#df_diagnostic_results
+
+# Join each subset to A, customizing the join type for each group
+HLI_joined_list <- lapply(HLI.split, function(subset) {
+  if (subset$identify.by[1] == "pathogen name") {
+    # After looking through the data, it appears the genus and species in both data sets would match
+    merge(df_diagnostic_results, subset,  by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+          #keep the y in each
+          by.y=c('Genus','Species'), all.y = TRUE)
+    #determine which group it is by identifying the first entry in the identify.by column within the subset
+  } else if (subset$identify.by[1] == "genus only") {
+    # For this group, only the genus is identified in the high/low impact dataset.
+    # Looking through the ARM records, when genus is identified, family is also identified
+    #   see
+       #view(df_diagnostic_results |> filter(!is.na(TAXONOMY_SPECIES)) |> count(TAXONOMY_FAMILY))
+    merge(df_diagnostic_results, subset, by.x=c('TAXONOMY_FAMILY','TAXONOMY_GENUS'),
+          by.y=c('Family','Genus'), all.y = TRUE)
+  } else {
+    # the only other group is genus and species, so default to comparing genus and species
+    merge(df_diagnostic_results, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+          by.y=c('Genus','Species'), all.y=TRUE)
+  }
+})
+
+# Combine the joined dataframes
+# use dplyr::bind_rows instead of rbind because the matching columns rearrange the column order;
+#   bind_rows will match column names instead of requiring the same order
+HLI_final_df <- do.call(bind_rows, HLI_joined_list)
+
+# #does it join correctly?
+# df_diagnostic_results |> left_join(final_df)
+# #is it matching genus and species correctly? do they have the same name?
+#  df_diagnostic_results |> left_join(final_df) |> filter(!is.na(`Qualitative Impact Rating`)) |>
+#    dplyr::select(TAXONOMY_GENUS,TAXONOMY_SPECIES,`Pest Scientific Name`)
+# #has it duplicated anything?
+# which(duplicated(df_diagnostic_results) == TRUE) #this code works correctly, as evidenced by changing TRUE to FALSE
+# #everything appears to be working correctly
+
+df_diagnostic_results = df_diagnostic_results |> left_join(HLI_final_df) |> dplyr::select(
+  #all of complete.records columns
+  colnames(df_diagnostic_results),
+  #source of info, pest impact, and scientific name for completeness
+  Source,
+  `Qualitative Impact Rating`,
+  `Pest Scientific Name`,
+  HLI_score)
+
+
+
+```
+
+Now find out where the port profile gets commodity information.
+
+
