@@ -14,7 +14,6 @@ params:
   ppq.select.agents.score: 1
   begin_date: 2019-10-01
   end_date: 2025-04-01
-
 ---
 
 ```{r setup, include=FALSE}
@@ -47,10 +46,16 @@ ppq.select.agents.score <- params$ppq.select.agents.score
 begin_date <- params$begin_date
 end_date <- params$end_date
 ```
-## Known high risk pests
 
-put together PPQ's known risks that extend beyond quarantine/non quarantine
+# Known pest impacts
+
+Put together PPQ's known risks that extend beyond quarantine/non quarantine
+
 Intent is for chunks to be incorporated into port profiles as appropriate
+
+## OPEP list
+
+Start with OPEP
 
 ```{r load-and-prep-opep-data}
 ##THE OPEP LIST IS NATIVELY FORMATTED WITH EXTRA LINES AND STUFF - IT HAS TO BE MANUALLY MANIPULATED TO FIT A STANDARD DATA FORMAT AND SAVED .CSV
@@ -95,39 +100,54 @@ path.comm.name = opep.list |> filter(Model=='Pathogen') |>
   filter(!Common.Name=='') |> 
   pull(Common.Name)
 
+#Create a function that calculates the expected impact of a pest based on high/mod/low impact probabilities (scaled 0-1)
 pest_impact_calc_func=function(high.impacts,mod.impacts){
   (
     (high.impacts*2) + mod.impacts) / 200
 }
 
 # determine quantification of impact for each OPEP pest and determine if the pest is in OPEP list ----
-opep.list.red = opep.list |>
-  #Remove lines that don't correspond to an organism
-  filter(!Scientific.name=='') |>
-  #If we don't have better information then just delete from list and it will default to a quarantine/non quarantine status
-  filter(!Predicted.pest.impact.in.US %in% c('N/A','Undetermined')) |>
+opep.list.red = opep.list |> filter(!Scientific.name=='') |> 
+  filter(!Predicted.pest.impact.in.US %in% c('N/A','Undetermined')) |> 
+  # filter(is.na(Predicted.pest.impact.in.US)) |> 
   mutate(Prob.pest.will.cause.high.impacts = parse_number(Prob.pest.will.cause.high.impacts),
          Prob.pest.will.cause.mod.impacts = parse_number(Prob.pest.will.cause.mod.impacts),
          Prob.pest.will.cause.low.impacts = parse_number(Prob.pest.will.cause.low.impacts)
   ) |> 
   #recalculate opep ranking
-  mutate(Predicted.pest.impact.in.US = pest_impact_calc_func(Prob.pest.will.cause.high.impacts,
-                                                             Prob.pest.will.cause.mod.impacts)
-  #        ) |> 
-  # #change name structure to match other data base
-  # dplyr::select(Scientific.name,Common.Name,Genus,Species,Predicted.pest.impact.in.US) |> 
-  # mutate(name.match=paste(Genus,Species,sep = ' ')) |> dplyr::select(-Genus,-Species)
-)
+  mutate(Predicted.pest.impact.in.US = ((Prob.pest.will.cause.high.impacts*2)+Prob.pest.will.cause.mod.impacts)/200) |> 
+  #change name structure to match other data base
+  dplyr::select(Scientific.name,Common.Name,Genus,Species,Predicted.pest.impact.in.US) |> 
+  mutate(name.match=paste(Genus,Species,sep = ' ')) |> dplyr::select(-Genus,-Species)
+
+
+# # determine quantification of impact for each OPEP pest and determine if the pest is in OPEP list ----
+# opep.list.red = opep.list |>
+#   #Remove lines that don't correspond to an organism
+#   filter(!Scientific.name=='') |>
+#   #If we don't have better information then just delete from list and it will default to a quarantine/non quarantine status
+#   filter(!Predicted.pest.impact.in.US %in% c('N/A','Undetermined')) |>
+#   mutate(Prob.pest.will.cause.high.impacts = parse_number(Prob.pest.will.cause.high.impacts),
+#          Prob.pest.will.cause.mod.impacts = parse_number(Prob.pest.will.cause.mod.impacts),
+#          Prob.pest.will.cause.low.impacts = parse_number(Prob.pest.will.cause.low.impacts)
+#   ) |> 
+#   #recalculate opep ranking
+#   mutate(Predicted.pest.impact.in.US = pest_impact_calc_func(Prob.pest.will.cause.high.impacts,
+#                                                              Prob.pest.will.cause.mod.impacts)
+#   #        ) |> 
+#   # #change name structure to match other data base
+#   # dplyr::select(Scientific.name,Common.Name,Genus,Species,Predicted.pest.impact.in.US) |> 
+#   # mutate(name.match=paste(Genus,Species,sep = ' ')) |> dplyr::select(-Genus,-Species)
+# )
 
 
 #In the original version, I compare these lists to taxonomies in the inspection+commodity+diagnostic request (complete.records)
 # see ~line 661
 ```
-Now need to see where `opep.list.red` fits in port profiles
 
+## FNW list
 
-
-```{r load-FNW-data}
+```{r load-FNW-data, message = FALSE}
 FNW.files.in.outputs = file.info(list.files(here::here('Inputs','Data','FNW'), full.names = T))
 ##gets the file with the last modified time.. this should work well in a pipeline system
 FNW.dat <- read_csv(
@@ -183,35 +203,15 @@ FNW.dat = FNW.dat |> mutate(FNW_score = case_when(
 FNW.split = split(FNW.dat,
                   FNW.dat$`Taxon Unit Type`)
 
-## Below is how I joined the risk data to actual rows of inspection/pest interceptions. This will probably have to happen with diagnostic results table, now.
-
-# 
-# #The following connected it by taxonomy 
-# FNW_joined_list <- lapply(FNW.split, function(subset) {
-#   if (subset$`Taxon Unit Type`[1] == "Genus") {
-#     # For genus only, match genus and family
-#     merge(complete.records, subset,  by.x=c('TAXONOMY_FAMILY','TAXONOMY_GENUS'),
-#           #keep the y in each
-#           by.y=c('Taxonomy Family','Taxonomy Genus'), all.y = TRUE)
-#     #determine which group it is by identifying the first entry in the identify.by column within the subset
-#   } else if (subset$`Taxon Unit Type`[1] == "Species") {
-#     # For species-level, identify by genus and smpecies
-#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
-#           by.y=c('Taxonomy Genus','Taxonomy Species'), all.y = TRUE)
-#   } else if (subset$`Taxon Unit Type`[1] == "Subspecies") {
-#     # For subspecies-level, identify by genus, species, and subspecies
-#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES','TAXONOMY_SUBSPECIES'),
-#           by.y=c('Taxonomy Genus','Taxonomy Species','Taxonomy Subspecies'), all.y = TRUE)
-#   } else {
-#     # the last group is variety but these are only identified to genus/species in the FNW list, so just keep the genus/species combination
-#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
-#           by.y=c('Taxonomy Genus','Taxonomy Species'), all.y=TRUE)
-#   }
-# })
 ```
-## Include program pest list
 
-```{r load-HLI-data}
+### FNW Delete me
+
+When found where to incoproate FNW taxonomies
+
+## Program pest list
+
+```{r load-HLI-data, message = FALSE}
 HLI.files.in.outputs = file.info(list.files(here::here('Inputs','Data','High and low impact pests'), full.names = T))
 ##gets the file with the last modified time.. this should work well in a pipeline system
 HLI.dat = read_csv(
@@ -237,57 +237,17 @@ HLI.dat = HLI.dat |> mutate(HLI_score = case_when(
 HLI.split=split(HLI.dat,
   HLI.dat$identify.by)
 
-
-## Below is how I joined the risk data to actual rows of inspection/pest interceptions. This will probably have to happen with diagnostic results table, now.
-
-
-# # Join each subset to A, customizing the join type for each group
-# HLI_joined_list <- lapply(HLI.split, function(subset) {
-#   if (subset$identify.by[1] == "pathogen name") {
-#     # After looking through the data, it appears the genus and species in both data sets would match
-#     merge(complete.records, subset,  by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
-#           #keep the y in each
-#           by.y=c('Genus','Species'), all.y = TRUE)
-#     #determine which group it is by identifying the first entry in the identify.by column within the subset
-#   } else if (subset$identify.by[1] == "genus only") {
-#     # For this group, only the genus is identified in the high/low impact dataset.
-#     # Looking through the ARM records, when genus is identified, family is also identified
-#     #   see 
-#        #view(complete.records |> filter(!is.na(TAXONOMY_SPECIES)) |> count(TAXONOMY_FAMILY))
-#     merge(complete.records, subset, by.x=c('TAXONOMY_FAMILY','TAXONOMY_GENUS'),
-#           by.y=c('Family','Genus'), all.y = TRUE)
-#   } else {
-#     # the only other group is genus and species, so default to comparing genus and species
-#     merge(complete.records, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
-#           by.y=c('Genus','Species'), all.y=TRUE)
-#   }
-# })
-# 
-# # Combine the joined dataframes
-# # use dplyr::bind_rows instead of rbind because the matching columns rearrange the column order;
-# #   bind_rows will match column names instead of requiring the same order
-# HLI_final_df <- do.call(bind_rows, HLI_joined_list)
-# 
-# # #does it join correctly?
-# # complete.records |> left_join(final_df)
-# # #is it matching genus and species correctly? do they have the same name?
-# #  complete.records |> left_join(final_df) |> filter(!is.na(`Qualitative Impact Rating`)) |>
-# #    dplyr::select(TAXONOMY_GENUS,TAXONOMY_SPECIES,`Pest Scientific Name`)
-# # #has it duplicated anything?
-# # which(duplicated(complete.records) == TRUE) #this code works correctly, as evidenced by changing TRUE to FALSE
-# # #everything appears to be working correctly
-# 
-# complete.records = complete.records |> left_join(HLI_final_df) |> dplyr::select(
-#   #all of complete.records columns
-#   colnames(complete.records),
-#   #source of info, pest impact, and scientific name for completeness
-#   Source,
-#   `Qualitative Impact Rating`,
-#   `Pest Scientific Name`,
-#   HLI_score)
-
 ```
 
+### HLI delete me
+
+When found where to incorporate HLI
+
+### HLI Delete stale code
+
+also delete stale code
+
+# Retrieve pest query diagnostics
 
 ```{r query-pest-diagnostics}
 #function for connecting to database####
@@ -301,11 +261,11 @@ connect_db <- function(database) {
 trusted_connection=yes")
 }
 #connection to database
-dbconn <- connect_db(database=db)
+db_conn <- connect_db(database=db)
 
 mvw_diagnostic_results <- tbl(
   db_conn,
-  sql("select TOP 1000 * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
+  sql("select TOP 1000 * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results_Current_all]")
 )
 
 df_diagnostic_results <- mvw_diagnostic_results %>% 
@@ -318,6 +278,10 @@ df_diagnostic_results <- mvw_diagnostic_results %>%
   ) %>% 
   collect()
 ```
+
+## Correct pest query diagnostics
+
+Correct based on quarantine status at port of entry as well as parse the final determinations to not double count multiple requests of the same pest because of different life stages or multiple identifiers.
 
 ```{r correct query_pest_diagnostics}
 #Final ID are repeated, at least because of different life stages of the same pest
@@ -419,14 +383,130 @@ parse_final_determination = function(data) {
 
 df_diagnostic_results <- parse_final_determination(df_diagnostic_results)
 
-#Left off here 5/8.
-#The above code is working. it's flexible and solves for MAINLAND vs CONUS
+#The above code is flexible and solves for MAINLAND vs CONUS
 #it also integrates with the DART's diagnostic results table but parses using our approach as well.
 
 ```
+
+# Integrate diagnostic results with known pest impacts
+
 Next step is to assess the df_diagnostic_results taxonomies for matches across FNW, HLI, or OPEP
 
-```{r assign_pest_score_to_each_record}
+## Score pest taxonomies based on matches with OPEP list
+
+```{r integrate_opep_impacts, message=FALSE}
+
+
+# Prep a column in diagnostic records to accept OPEP pest info
+df_diagnostic_results$OPEP.pest = grepl(
+  paste(
+    #Stitch back genus and species - separating was just done to get rid of white space and extra tags on the end of the genus/species
+    paste(
+      arth.genus.species$Genus,
+      arth.genus.species$Species,
+      sep=' ')
+    ,collapse='|'),
+  #find genus and species at the same time in order to avoid the situation where one genus is found and a species from another genus also matches
+  paste(df_diagnostic_results$PEST_TAXONOMY_GENUS,df_diagnostic_results$PEST_TAXONOMY_SPECIES, sep=' ')
+) #| grepl(
+#   paste(trimws(path.sci.name),
+#         trimws(path.comm.name),
+#         collapse='|'),
+#   df_diagnostic_results$PEST_TAXONOMIC_NAME
+# )
+
+#Match by pathogen scientific names. These are unlikely to be used in ARM
+df_diagnostic_results$OPEP.path.sci.name = grepl(
+  paste(trimws(path.sci.name),
+        #         trimws(path.comm.name),
+        collapse='|'),
+  df_diagnostic_results$PEST_TAXONOMIC_NAME
+)
+
+#Match by pathogen common names. These are likely to be used to distinguish the pathogen in ARM
+df_diagnostic_results$OPEP.path.comm.name = grepl(
+  paste(#trimws(path.sci.name),
+    trimws(path.comm.name),
+    collapse='|'),
+  df_diagnostic_results$PEST_TAXONOMIC_NAME
+)
+
+#The below is the 
+df_diagnostic_results = df_diagnostic_results |> mutate(name.match=paste(PEST_TAXONOMY_GENUS,PEST_TAXONOMY_SPECIES,sep = ' ')) %>%
+  left_join(opep.list.red |> filter(!name.match=='NA NA'), 
+            by = c("name.match" = "name.match")) %>%
+  left_join(opep.list.red, 
+            by = c("PEST_TAXONOMIC_NAME" = "Scientific.name")) %>%
+  mutate(Predicted.pest.impact.in.US_2 = coalesce(Predicted.pest.impact.in.US.x, Predicted.pest.impact.in.US.y)) %>%
+  dplyr::select(-c(ends_with(".x"), ends_with(".y")))%>%
+  left_join(opep.list.red, 
+            by = c("PEST_TAXONOMIC_NAME" = "Common.Name")) %>%
+  mutate(Predicted_pest_impact_in_US = coalesce(Predicted.pest.impact.in.US_2, Predicted.pest.impact.in.US)) %>%
+  dplyr::select(-Predicted.pest.impact.in.US, -Predicted.pest.impact.in.US_2)
+
+
+```
+
+This could use a little cleaning up
+
+-   check for extra columns
+
+-   comb for stale code
+
+## Score pest taxonomies based on matches with FNW list
+
+```{r integrate_FNW_impacts, message = FALSE}
+
+## Below is how I joined the risk data to actual rows of inspection/pest interceptions.
+
+#The following connected it by taxonomy
+FNW_joined_list <- lapply(FNW.split, function(subset) {
+  if (subset$`Taxon Unit Type`[1] == "Genus") {
+    # For genus only, match genus and family
+    merge(df_diagnostic_results, subset,  by.x=c('PEST_TAXONOMY_FAMILY','PEST_TAXONOMY_GENUS'),
+          #keep the y in each
+          by.y=c('Taxonomy Family','Taxonomy Genus'), all.y = TRUE)
+    #determine which group it is by identifying the first entry in the identify.by column within the subset
+  } else if (subset$`Taxon Unit Type`[1] == "Species") {
+    # For species-level, identify by genus and smpecies
+    merge(df_diagnostic_results, subset, by.x=c('PEST_TAXONOMY_GENUS','PEST_TAXONOMY_SPECIES'),
+          by.y=c('Taxonomy Genus','Taxonomy Species'), all.y = TRUE)
+  } else if (subset$`Taxon Unit Type`[1] == "Subspecies") {
+    # For subspecies-level, identify by genus, species, and subspecies
+    merge(df_diagnostic_results, subset, by.x=c('PEST_TAXONOMY_GENUS','PEST_TAXONOMY_SPECIES'#,'TAXONOMY_SUBSPECIES'
+                                                )
+                                                ,
+          by.y=c('Taxonomy Genus','Taxonomy Species'
+                 #mvw_diagnostic_results does not have subspecies; additionally, the only subspecies identified currently in the FNW is Setaria pumila ssp. pallidefusca; according to NCSU extension page on the Setaria pumila, this subspecies no longer considered different from the species: "The root system if fibrous on this self-seeding specimen. Varieties and Subspecies, including one on the federal list of noxious weeds, are no longer recognized as distinct from the species. All plants of this species can have weedy and aggressive tendencies."
+                 
+                 #,'PEST_TAXONOMY_SUBSPECIES'
+                 )
+                 , all.y = TRUE)
+  } else {
+    # the last group is variety but these are only identified to genus/species in the FNW list, so just keep the genus/species combination
+    merge(df_diagnostic_results, subset, by.x=c('PEST_TAXONOMY_GENUS','PEST_TAXONOMY_SPECIES'),
+          by.y=c('Taxonomy Genus','Taxonomy Species'), all.y=TRUE)
+  }
+})
+
+# Combine the joined dataframes
+FNW_final_df <- do.call(bind_rows, FNW_joined_list) |> 
+  rename(`Taxon_Identification_Level`=`Taxon Unit Type`)
+
+df_diagnostic_results = df_diagnostic_results |> left_join(FNW_final_df) |> dplyr::select(
+  #all of complete.records columns
+  colnames(df_diagnostic_results),
+  #source of info, pest impact, and scientific name for completeness
+  Source,
+  `Name in ARM`,
+  `Taxon_Identification_Level`,
+  FNW_score
+  )
+```
+
+## Score pest taxonomies based on matches with HLI list
+
+```{r assign_pest_score_to_each_record, message = FALSE}
 #Check later, but I think the quarantine status might be coming from CONUS; use my code to assign quarantine status based on port location
 
 #df_diagnostic_results
@@ -435,7 +515,7 @@ Next step is to assess the df_diagnostic_results taxonomies for matches across F
 HLI_joined_list <- lapply(HLI.split, function(subset) {
   if (subset$identify.by[1] == "pathogen name") {
     # After looking through the data, it appears the genus and species in both data sets would match
-    merge(df_diagnostic_results, subset,  by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+    merge(df_diagnostic_results, subset,  by.x=c('PEST_TAXONOMY_GENUS','PEST_TAXONOMY_SPECIES'),
           #keep the y in each
           by.y=c('Genus','Species'), all.y = TRUE)
     #determine which group it is by identifying the first entry in the identify.by column within the subset
@@ -444,11 +524,11 @@ HLI_joined_list <- lapply(HLI.split, function(subset) {
     # Looking through the ARM records, when genus is identified, family is also identified
     #   see
        #view(df_diagnostic_results |> filter(!is.na(TAXONOMY_SPECIES)) |> count(TAXONOMY_FAMILY))
-    merge(df_diagnostic_results, subset, by.x=c('TAXONOMY_FAMILY','TAXONOMY_GENUS'),
+    merge(df_diagnostic_results, subset, by.x=c('PEST_TAXONOMY_FAMILY','PEST_TAXONOMY_GENUS'),
           by.y=c('Family','Genus'), all.y = TRUE)
   } else {
     # the only other group is genus and species, so default to comparing genus and species
-    merge(df_diagnostic_results, subset, by.x=c('TAXONOMY_GENUS','TAXONOMY_SPECIES'),
+    merge(df_diagnostic_results, subset, by.x=c('PEST_TAXONOMY_GENUS','PEST_TAXONOMY_SPECIES'),
           by.y=c('Genus','Species'), all.y=TRUE)
   }
 })
@@ -480,6 +560,121 @@ df_diagnostic_results = df_diagnostic_results |> left_join(HLI_final_df) |> dply
 
 ```
 
+Diagnostic results table is now carrying columns that indicate if the pest was on the OPEP, FNW, or HLI list
+
+## Consolidate that information
+
+#### the hang up right now is that there is no state of the port of arrival
+
+Need state or at least cnous/territory/hawaii of POE to check against the quarnatine status at each of those, to figure out if it is quarantine at the POE location.
+
+DETERMIANTION_LOCAITON_STATE has DC for some Miami FL and MN entries; Not sure where determination would occur for HI and PR - it might make it easier if I could find that determination for interceptions in those locations always happen within them
+
+To determine if the pest is quarantined at the port of entry, we will extract the port information from that given in df_diagnostic_results table, compare that with ARM Datamart's reference table, and determine the state of the PoE systematically
+
+I left off here (6/2/25) - I just realized there's a QUARANTINE_STATUS column in the data already... Need to check that this is quarantine status at POE and not of mainland. If it is at POE, can just drop the following chunk
+
+```{r identifying port of entry quarantine status}
+# #Identify port number
+# df_diagnostic_results <- df_diagnostic_results |> 
+#   mutate(port_number = str_extract(PORT_OF_ENTRY_NAME, "(?<=\\().*?(?=\\))"))
+# 
+# #Identify the column that reports port number - just so it's easier to change if it ever changes on this curated table
+# port_number_in_XwalkLocation_tbl <- 'ARM_CBPPortNumber'
+# 
+# #Get reference table
+# port_state_lookup_tbl <- tbl(
+#   db_conn,
+#   sql("SELECT * FROM [PPQ_AQI_ARMDMV2].[dbo].[tbl_AQI_XwalkLocation]")
+# ) |> dplyr::select(all_of(port_number_in_XwalkLocation_tbl),STATE_CD) |> 
+#   collect()
+# 
+# df_diagnostic_results <- df_diagnostic_results |> 
+#   left_join(port_state_lookup_tbl,
+#             by = c('port_number' = port_number_in_XwalkLocation_tbl),
+#             relationship = 'many-to-one'
+#             )
+# 
+# poe_loc <- ifelse(
+#   df_diagnostic_results$STATE_CD == 'PR', 'QUARANTINE_STATUS_PUERTO_RICO'
+# )
+
+#check that QUARANTINE_STATUS is quarantine status at POE and not of mainland.
+mvw_diagnostic_results <- tbl(
+  db_conn,
+  sql("select * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
+)
+
+df_diagnostic_results <- mvw_diagnostic_results %>% 
+  filter(
+    INSPECTION_DATE >= begin_date,
+    INSPECTION_DATE <= end_date,
+    DETERMINATION_TYPE == 'Final ID',
+    SUBCATEGORY %in% c("CBP", "PIS", "SITC", "Non-PIS PPQ"),
+    !is.na(PEST_TAXONOMIC_NAME)
+  ) %>% 
+  collect()
+
+#records where quarantine status in mainland is diff from PR or hawaii
+test <- df_diagnostic_results |> mutate(non_match = case_when(QUARANTINE_STATUS_MAINLAND != QUARANTINE_STATUS_HAWAII | QUARANTINE_STATUS_MAINLAND != QUARANTINE_STATUS_PUERTO_RICO ~ 1,
+                                                      .default = 0 )) |> 
+  dplyr::filter(non_match > 0)
+
+#does quarantin estatus mathc hawaii or puerto rico?
+test2 <- test |> 
+  mutate(foreign_match = case_when(
+    QUARANTINE_STATUS == QUARANTINE_STATUS_HAWAII | QUARANTINE_STATUS == QUARANTINE_STATUS_PUERTO_RICO ~ 1,
+    .default = 0
+  )) |> 
+  dplyr::filter(foreign_match > 0)
+#a lot of these had no phytosanitary action AND they were not found in hawaii or puerto rico - but QUARANTINE_STATUS does not align with mainland quarantine status..
+
+#where were the POEs?
+test3 <- df_diagnostic_results |> filter(QUARANTINE_STATUS != QUARANTINE_STATUS_MAINLAND) |> count(PORT_OF_ARRIVAL_NAME)
+# I see entries from PR and HI, so this is not following just QUARANTINE STATUS MAINLAND
+#not exactly sure what QUARANTINE_STATUS is reflecting, though...
+test4 <- df_diagnostic_results |> 
+  filter(QUARANTINE_STATUS != QUARANTINE_STATUS_MAINLAND) |> 
+  count(PORT_OF_ARRIVAL_NAME,QUARANTINE_RECOMMENDATION)
+#The majority of these are no phytosanitary action as well
+
+#Think I just need to get up with DART and see what this column is about.
+
+```
+
+Left off here 6/2/25
+
+```{r quantification of impact}
+#case_when() requires sequential ranking. If something is evaluated and fits the case of a prior question, it will not be questioned again
+df_diagnostic_results <- df_diagnostic_results |> mutate(pest.risk = case_when(
+  #program pests are the most significant, so use their score first
+  is.na(HLI_score) == FALSE ~ HLI_score,
+  #FNWs and OPEPs are next
+  is.na(FNW_score) == FALSE ~ FNW_score,
+  #Check for OPEP score here
+  is.na(Predicted_pest_impact_in_US) == FALSE ~ Predicted_pest_impact_in_US,
+  #all others will be evaluated for their ARM quarantine status
+  quarantine.status.at.port == 'Quarantine' ~ quarantine.pest.value,
+  quarantine.status.at.port == 'Uncategorized' ~ uncategorized.pest.value,
+  quarantine.status.at.port == 'Non-Quarantine' ~ nonquarantine.pest.value,
+  #anything that doesn't fit these is probably an error or needs to be reviewed; return as 0
+  .default = 0
+))
+
+commodity_pest_risk = df_diagnostic_results |> 
+  group_by(PORT_OF_ENTRY_NAME,INSPECTION_PATHWAY,COMMODITY,ORIGIN_NM) |> summarise(mean.pest.risk = mean(pest.risk) )
+
+#all combinations should be unique at this point (without mean.pest.risk)
+commodity_pest_risk |> dplyr::select(-mean.pest.risk)
+commodity_pest_risk |> dplyr::select(-mean.pest.risk) |> unique()
+
+pathway.assessment = commodity_pest_risk |> 
+  left_join(ARM.num.records.at.port, by=c('CBP_PORT_NUMBER','PATHWAY','COMMODITY','ORIGIN_NM')) |> 
+  left_join(ARM.avg.live.pests.per.infestation.at.port, by=c('CBP_PORT_NUMBER','PATHWAY','COMMODITY','ORIGIN_NM')) |> 
+  left_join(ARM.richness.pests.at.port, by=c('CBP_PORT_NUMBER','PATHWAY','COMMODITY','ORIGIN_NM')) |> 
+  left_join(ARM.richness.family.at.port, by=c('CBP_PORT_NUMBER','PATHWAY','COMMODITY','ORIGIN_NM')) |> 
+  left_join(ARM.num.shipments.with.live.pest.at.port, by=c('CBP_PORT_NUMBER','PATHWAY','COMMODITY','ORIGIN_NM')) |> 
+  arrange(desc(mean.pest.risk))
+```
+
 Now find out where the port profile gets commodity information.
-
-
