@@ -1,0 +1,246 @@
+# Module C: Analysis and Summarization
+
+This module creates summaries and pathway assessments from pest risk data.
+Now simplified using the AgCargoPestRisk package functions.
+
+## Overview
+The purpose of this module is to take pest taxonomies with impact scores and summarize them.
+This handles both:
+1. Simple pest lists with impact scores (pest taxonomy summaries)
+2. Complete datasets with shipment details (pathway and commodity summaries)
+
+```{r load libraries, message=FALSE, warning=FALSE}
+# Source package functions during development
+source("../R/analysis_functions.R")
+source("../R/utils.R")
+
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(binom)
+```
+
+```{r load data from module b}
+# Load pest risk data from Module B output
+input_file <- "../outputs/module_b_output.rds"
+
+if (file.exists(input_file)) {
+  records <- readRDS(input_file)
+  message("Loaded ", nrow(records), " records from Module B")
+} else {
+  # Fallback to CSV if RDS not available
+  csv_file <- "../outputs/module_b_output.csv"
+  if (file.exists(csv_file)) {
+    records <- read_csv(csv_file)
+    message("Loaded ", nrow(records), " records from Module B (CSV)")
+  } else {
+    stop("No Module B output found. Please run Module B first.")
+  }
+}
+```
+
+# Summarize pest impact rating sources
+
+```{r summarize pest taxonomies}
+
+# Summary of risk score distribution
+impact_summary <- records %>%
+  summarise(
+    total_records = n(),
+    mean_risk = mean(pest_impact, na.rm = TRUE),
+    high_risk_count = sum(pest_impact > 0.5, na.rm = TRUE),
+    medium_risk_count = sum(pest_impact >= 0.25 & pest_impact <= 0.5, na.rm = TRUE),
+    low_risk_count = sum(pest_impact > 0 & pest_impact < 0.25, na.rm = TRUE),
+    zero_risk_count = sum(pest_impact == 0, na.rm = TRUE),
+    quarantined = sum(quarantine_status_at_port == "Quarantine", na.rm = TRUE)
+  )
+
+print("Impact Score Summary:")
+print(impact_summary)
+```
+
+# Create a parent summary table
+Can build in utility for this, such as an web-based interface that allows drill down charts
+
+```{r pest impact by pathways}
+parent_summary_table <- records |> 
+  dplyr::select(
+    INSPECTION_DATETIME,
+
+    COMMODITY_COMMON_NAME,
+    COUNTRY_OF_ORIGIN_NAME,
+    PATHWAY,
+    REGION,
+    LOCATION_STATE_CODE,
+    CBP_PORT_NUMBER,
+
+    HOST_PROXIMITY,
+    QUANTITY,
+
+    PEST_TAXON_SIMPLE_NAME,
+    NUMBER_ALIVE_ADULTS,
+    NUMBER_ALIVE_PUPAE,
+    NUMBER_ALIVE_CYSTS,
+    NUMBER_ALIVE_EGGS,
+    NUMBER_ALIVE_IMMATURE,
+
+    pest_impact
+  )
+
+```
+
+# Create pathway summary
+```{r pathway summary}
+port_pathway_summary <- parent_summary_table |>
+  group_by(
+    COMMODITY_COMMON_NAME,
+    COUNTRY_OF_ORIGIN_NAME,
+    PATHWAY,
+    REGION,
+    LOCATION_STATE_CODE,
+    CBP_PORT_NUMBER
+  ) %>%
+  summarise(
+    total_detections = n(),
+    mean_risk = mean(pest_impact, na.rm = TRUE),
+    high_risk_detections = sum(pest_impact > 0.5, na.rm = TRUE),
+    medium_risk_detections = sum(pest_impact >= 0.25 & pest_impact <= 0.5, na.rm = TRUE),
+    low_risk_detections = sum(pest_impact > 0 & pest_impact < 0.25, na.rm = TRUE),
+    zero_risk_detections = sum(pest_impact == 0, na.rm = TRUE),
+    .groups = 'drop',
+    avg_n_life_stages = (sum(
+      !is.na(NUMBER_ALIVE_ADULTS)) + 
+      sum(!is.na(NUMBER_ALIVE_PUPAE)) + 
+      sum(!is.na(NUMBER_ALIVE_EGGS)) + 
+      sum(!is.na(NUMBER_ALIVE_IMMATURE)) + 
+      sum(!is.na(NUMBER_ALIVE_CYSTS))) / n()
+  ) %>%
+  arrange(desc(mean_risk))
+
+#calculate probability of a high risk pest
+port_pathway_summary <- port_pathway_summary |>
+  mutate(
+    #calculate basic proportion
+    prob_high_risk_pest = high_risk_detections / total_detections
+  ) |>
+  # add confidence intervals
+  rowwise() %>%
+  mutate(ci = list(
+    binom.confint(
+      high_risk_detections, 
+      total_detections, 
+      methods = "wilson", 
+      conf.level = 0.95)
+      ), 
+      ci_lower_95 = ci$lower, 
+      ci_upper_95 = ci$upper ) |>
+       ungroup() |> 
+       select(-ci) |>
+       arrange(desc(prob_high_risk_pest))
+
+
+
+
+print(head(port_pathway_summary, 15))
+View(port_pathway_summary)
+
+```
+
+
+```{r summarize by commodity and pathway}
+# Create commodity-pathway summaries using package function
+commodity_pest_risk <- summarize_commodity_pest_risk(df_diagnostic_results)
+
+# Create pathway assessment using package function
+pathway_assessment <- create_pathway_assessment(commodity_pest_risk)
+
+message("Created pathway assessment with", nrow(pathway_assessment), "commodity-origin combinations")
+```
+
+```{r generate summary statistics}
+# Generate risk summary by port using package function
+port_summary <- generate_risk_summary(pathway_assessment, group_vars = "PORT_OF_ENTRY_NAME")
+
+# Generate risk summary by commodity
+commodity_summary <- generate_risk_summary(pathway_assessment, group_vars = "COMMODITY")
+
+# Generate risk summary by origin country
+origin_summary <- generate_risk_summary(pathway_assessment, group_vars = "ORIGIN_NM")
+
+# Overall summary statistics
+overall_summary <- df_diagnostic_results %>%
+  summarise(
+    total_detections = n(),
+    unique_pests = n_distinct(paste(PEST_TAXONOMY_GENUS, PEST_TAXONOMY_SPECIES)),
+    unique_ports = n_distinct(PORT_OF_ENTRY_NAME),
+    unique_commodities = n_distinct(COMMODITY),
+    unique_origins = n_distinct(ORIGIN_NM),
+    mean_risk_score = mean(pest.risk, na.rm = TRUE),
+    high_risk_detections = sum(pest.risk >= 0.5, na.rm = TRUE),
+    high_risk_percentage = round(100 * sum(pest.risk >= 0.5, na.rm = TRUE) / n(), 2)
+  )
+
+print("Overall Summary:")
+print(overall_summary)
+```
+
+```{r create visualizations}
+# Risk score distribution
+risk_dist_plot <- ggplot(df_diagnostic_results, aes(x = pest.risk)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Pest Risk Scores",
+    x = "Risk Score",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+# Top risk commodity-origin combinations
+top_risks_plot <- pathway_assessment %>%
+  head(20) %>%
+  mutate(combo = paste(COMMODITY, "-", ORIGIN_NM)) %>%
+  ggplot(aes(x = reorder(combo, mean.pest.risk), y = mean.pest.risk)) +
+  geom_col(fill = "darkred", alpha = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Top 20 Highest Risk Commodity-Origin Combinations",
+    x = "Commodity - Origin",
+    y = "Mean Risk Score"
+  ) +
+  theme_minimal()
+
+# Risk by port
+port_risk_plot <- port_summary %>%
+  ggplot(aes(x = reorder(PORT_OF_ENTRY_NAME, mean_risk_score), y = mean_risk_score)) +
+  geom_col(fill = "darkgreen", alpha = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Mean Risk Score by Port",
+    x = "Port of Entry",
+    y = "Mean Risk Score"
+  ) +
+  theme_minimal()
+
+print(risk_dist_plot)
+print(top_risks_plot)
+print(port_risk_plot)
+```
+
+```{r export module c results}
+# Export all results using package function
+output_dir <- "../outputs"
+
+export_results(pathway_assessment, "pathway_assessment", output_dir)
+export_results(pest_taxonomy_summary, "pest_taxonomy_summary", output_dir)
+export_results(port_summary, "port_risk_summary", output_dir)
+export_results(commodity_summary, "commodity_risk_summary", output_dir)
+export_results(origin_summary, "origin_risk_summary", output_dir)
+
+# Save plots
+ggsave(file.path(output_dir, "risk_distribution.png"), risk_dist_plot, width = 10, height = 6)
+ggsave(file.path(output_dir, "top_risk_combinations.png"), top_risks_plot, width = 12, height = 8)
+ggsave(file.path(output_dir, "port_risk_summary.png"), port_risk_plot, width = 10, height = 6)
+
+message("Module C analysis complete!")
+message("All outputs saved to:", output_dir)
+```

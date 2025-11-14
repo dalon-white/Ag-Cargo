@@ -1,0 +1,44 @@
+# Exclude from R package builds
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.git$
+^\.gitignore$
+^README\.Rmd$
+^LICENSE\.md$
+^NEWS\.md$
+^PROJECT_STRUCTURE\.md$
+
+# Exclude data and outputs
+^Inputs$
+^outputs$
+^data-raw$
+
+# Exclude development files
+^refactored_pest_risk_analysis\.R$
+^run_all_approaches\.R$
+^scripts$
+^jarrod.*\.Rmd$
+^pest risk lists\.Rmd$
+
+# Exclude documentation source
+^doc$
+^docs$
+^Meta$
+
+# Exclude CI/CD files
+^\.github$
+^\.travis\.yml$
+^appveyor\.yml$
+^codecov\.yml$
+
+# Exclude editor files
+^\.vscode$
+^\.idea$
+*~
+\.swp$
+\.swo$
+
+# Exclude cache
+^\.RData$
+^\.Rhistory$
+^cache$

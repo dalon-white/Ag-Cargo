@@ -1,0 +1,161 @@
+---
+title: "Getting Started with AgCargoPestRisk"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with AgCargoPestRisk}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE  # Set to TRUE when package is fully functional
+)
+```
+
+# Introduction
+
+The `AgCargoPestRisk` package provides a comprehensive toolkit for assessing pest risks associated with agricultural cargo imports. This vignette will walk you through the basic usage patterns.
+
+## Installation
+
+```{r installation}
+# Install from local source
+devtools::install_local("path/to/AgCargoPestRisk")
+
+# Or from GitHub (when available)
+# devtools::install_github("USDA/AgCargoPestRisk")
+```
+
+## Quick Start: Complete Pipeline
+
+The simplest way to run a complete pest risk assessment is using the `run_pest_risk_pipeline()` function:
+
+```{r complete-pipeline}
+library(AgCargoPestRisk)
+
+results <- run_pest_risk_pipeline(
+  begin_date = "2019-10-01",
+  end_date = "2025-04-01",
+  opep_directory = "path/to/OPEP",
+  fnw_directory = "path/to/FNW",
+  hli_directory = "path/to/HLI",
+  output_dir = "outputs",
+  export_results = TRUE
+)
+
+# Access results
+pathway_assessment <- results$pathway_assessment
+risk_summary <- results$risk_summary
+```
+
+### What the Pipeline Does
+
+1. **Connects to database** and retrieves diagnostic results
+2. **Loads pest impact data** from OPEP, FNW, and HLI sources
+3. **Matches taxonomies** across different pest databases
+4. **Calculates risk scores** based on hierarchy of impact assessments
+5. **Summarizes by commodity and origin** for pathway assessment
+6. **Exports results** to CSV and RDS formats
+
+## Viewing Results
+
+```{r view-results}
+# Top 10 highest risk pathways
+head(pathway_assessment, 10)
+
+# Risk summary by port
+print(risk_summary)
+
+# Filter for specific port
+miami_risks <- pathway_assessment %>%
+  filter(grepl("Miami", PORT_OF_ENTRY_NAME))
+```
+
+## Customizing Parameters
+
+You can adjust risk scoring parameters:
+
+```{r custom-parameters}
+results <- run_pest_risk_pipeline(
+  begin_date = "2024-01-01",
+  end_date = "2024-12-31",
+  opep_directory = "path/to/OPEP",
+  fnw_directory = "path/to/FNW",
+  hli_directory = "path/to/HLI",
+  # Custom risk values
+  quarantine_pest_value = 0.6,      # Higher weight for quarantine pests
+  uncategorized_pest_value = 0.3,
+  nonquarantine_pest_value = 0.1,   # Small weight even for non-Q
+  # Custom program pest scores
+  caps_score = 1.0,
+  ppq_program_score = 0.9,
+  output_dir = "custom_outputs"
+)
+```
+
+## Understanding Risk Scores
+
+Risk scores are calculated using a hierarchical approach:
+
+1. **Program Pests** (HLI): Highest priority (score: 0.3-1.0)
+2. **FNW Assessments**: WRA-based invader probability (score: 0-1.0)
+3. **OPEP Assessments**: Expert-derived impact scores (score: 0-1.0)
+4. **Quarantine Status**: Default regulatory status
+   - Quarantine: 0.5
+   - Uncategorized: 0.25
+   - Non-Quarantine: 0.0
+
+The final score reflects the **likelihood and severity** of pest impact if introduced.
+
+## Next Steps
+
+- See `vignette("modular-usage")` for using individual functions
+- See `vignette("advanced-customization")` for custom workflows
+- Check `?run_pest_risk_pipeline` for detailed parameter documentation
+
+## Common Use Cases
+
+### Port-Specific Analysis
+
+```{r port-analysis}
+# Get all data, then filter
+all_results <- run_pest_risk_pipeline(...)
+
+port_assessment <- all_results$pathway_assessment %>%
+  filter(PORT_OF_ENTRY_NAME == "Miami, FL") %>%
+  arrange(desc(mean.pest.risk))
+```
+
+### Commodity-Specific Analysis
+
+```{r commodity-analysis}
+mango_risks <- all_results$pathway_assessment %>%
+  filter(COMMODITY == "Mango") %>%
+  arrange(desc(mean.pest.risk))
+```
+
+### Time Period Comparison
+
+```{r time-comparison}
+# Run for different periods
+results_2023 <- run_pest_risk_pipeline(
+  begin_date = "2023-01-01",
+  end_date = "2023-12-31",
+  ...
+)
+
+results_2024 <- run_pest_risk_pipeline(
+  begin_date = "2024-01-01",
+  end_date = "2024-12-31",
+  ...
+)
+
+# Compare results
+comparison <- bind_rows(
+  results_2023$risk_summary %>% mutate(year = 2023),
+  results_2024$risk_summary %>% mutate(year = 2024)
+)
+```

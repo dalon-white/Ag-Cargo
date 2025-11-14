@@ -1,0 +1,270 @@
+# Module A: Data Retrieval and Processing
+
+This module handles database connections, data retrieval, and initial processing.
+Now simplified using the AgCargoPestRisk package functions.
+
+## Overview
+- Load parameters
+- Retrieve inspections/commodities data based on these parameters
+- Retrieve connected interceptions based on these parameters
+- Process data to final determinations
+- Output pest taxonomies, location, region, state, port, commodities, date
+
+```{r load libraries, message=FALSE, warning=FALSE}
+# Option 1: Source functions during development
+# Use here::here() to get paths relative to project root
+source(here::here("R", "database_functions.R"))
+source(here::here("R", "data_processing.R"))
+source(here::here("R", "utils.R"))
+
+# Option 2: Load as package (after running devtools::load_all() or devtools::install())
+# library(AgCargoPestRisk)
+
+library(dplyr)
+library(readr)
+library(DBI)
+library(here)
+```
+
+# Load parameters
+- this needs to be edited to use a list from params
+
+## Port or Region approach
+A port number or region name can be used by an ag specialist to take a look at the shipments coming into that port or region
+
+
+```{r load parameters}
+# Load parameters from YAML or define here
+begin_date = "2019-10-01"
+end_date = "2025-04-01"
+
+# Additional parameters for filtering
+port_regions <- NULL  # specify if needed
+state <- NULL   # Not currently supported; build into get_f280_data() function
+port_numbers <- c("1101")    # specify if needed
+commodities <- NULL  # specify if needed
+origin_country <- NULL # specify if needed
+pathway_manifest <- NULL # specify if using a manifest to filter
+```
+
+# First step is to identify what pathways exist at your port of region of interest
+ - This reduces the amount of searching that is done against ARM
+ - This should be skipped if supplying a pathway_manifest
+## Check into time range issues
+I'm having trouble when i shrink the time range from 2019 to 2023 and then re-run; but it works when the time range is at 2019. Not sure where it is coming from right now. Something about how it is being translated to SQL code, maybe?
+
+```{r retrieve F280 data}
+# get the information about the pathways that exist and the number of shipments in that pathway
+db_conn <- connect_db()
+pathways <- get_f280_data(db_conn,
+              date_start = begin_date,
+              date_end = end_date,
+              #if necessary, specifiy port numbers
+              port_numbers = port_numbers,
+              #if necessary, specify region
+              port_regions = port_regions,
+              #limit = 20000 # limit can be used when in development in order to reduce the download time
+              ) |> 
+              process_num_ship()
+```
+# Gather inspections and commodity data from ARM
+ Connects the following shipment information:
+  - inspection information
+  - commodity information
+  - port information
+
+## Check into location issues
+I'm seeing records for all kinds of locations
+ - check if I'm missing a layer of filtering; perhaps by port?
+
+```{r}
+# commodity cannot be filtered by date time or country of origin; need inspection table to do that
+# get_inspection_id will by fitlered by date time and provide a list of inspection IDs to filter for commodities; other filtering will occur for commodities
+# NOTE TO SELF: THIS FUNCTION SHOULD FOCUS ON FILTERING DATETIME AND COUNTRY
+
+system.time(inspection_df <- get_inspections(connection = db_conn,
+                          date_start = begin_date,
+                          date_end = end_date,
+                          origin_country = origin_country)
+)
+
+inspection_ids <- get_inspection_ids(inspection_df)
+
+# Gather commodity info
+  # Where 'commodities' == commodities identified in f280, or elsewhere
+
+system.time(commodity_df <- get_commodity(connection = db_conn,
+                            commodities = commodities))
+
+# Gather the location info from ARM, which allows connecting the port number and region, etc. to the inspection and commodity table
+system.time(location_df <- get_location(
+  connection = db_conn,
+  date_start = begin_date,
+  date_end = end_date
+))
+
+
+# Merge inspection, commodity, and location data
+shipment_records <- merge_records(
+  commodity_df = commodity_df,
+  inspection_df = inspection_df,
+  location_df = location_df
+)
+
+# Filter to only keep commodity-origin combinations that exist in pathways (F280 data)
+# This ensures we only analyze shipments for pathways that were actually reported in F280
+if(exists("pathways") & is.null(pathway_manifest)) {
+shipment_records <- shipment_records %>%
+  semi_join(
+    pathways %>% 
+      distinct(COMMODITY, ORIGIN_NM, PORT_CD, REGION),
+    by = c("COMMODITY_COMMON_NAME" = "COMMODITY", 
+           "COUNTRY_OF_ORIGIN_NAME" = "ORIGIN_NM",
+           "CBP_PORT_NUMBER" = "PORT_CD",
+           "REGION" = "REGION"
+           )
+  )
+} else if (!is.null("pathway_manifest")) {
+  shipment_records <- shipment_records %>%
+    semi_join(
+      pathway_manifest,
+      by = c("COMMODITY_COMMON_NAME" = "COMMODITY",
+             "COUNTRY_OF_ORIGIN_NAME" = "ORIGIN_NM",
+             "CBP_PORT_NUMBER" = "PORT_CD"
+      )
+    )
+}
+
+message("After filtering by F280 pathways: ", nrow(shipment_records), " shipment records remain")
+
+
+#If it was engaged by a pathway_manifest (combination of both commodities and their origin country) instead of a specific port or region (e.g., applying to a manifest), then it won't be filtered again at this stage because it doesn't need to be
+```
+
+
+```{r retrieve inspections/commodities data, eval=FALSE}
+
+db_conn <- connect_db()
+
+# Retrieve diagnostic results using package function
+df_diagnostic_results <- get_diagnostic_results_FO_method(
+  connection = db_conn,
+  begin_date = params$begin_date,
+  end_date = params$end_date,
+  limit = 10000
+)
+
+message(paste("Retrieved", nrow(df_diagnostic_results), "diagnostic records"))
+```
+
+
+
+# Gather the pest diagnostic information
+Connects pest information (diagnostics) that are found on the shipments:
+  - diagnostic request from a pest that was found
+  - diagnostic determination from a requested submission (i.e., an identification tag)
+    - diagnostic failures (e.g., molecular analysis failed)
+  - enumeration of the alive, dead, and life stages that were associated with each diagnostic request
+
+
+```{r retrieve connected interceptions and determinations}
+#retrieve the diagnostic requests associated with our commodity IDs that we've identified
+diagnostic_request_df <- get_diagnostic_requests(
+  connection = db_conn,
+  shipment_records = shipment_records
+)
+
+# Get determination details using package function
+diag_determ_records <- get_determinations(
+  db_conn,
+  diagnostic_request_data = diagnostic_request_df
+)
+
+failed_determinations <- get_diag_determ_not_possible(
+  connection = db_conn,
+  diagnostic_determination_data = diag_determ_records
+)
+
+#retrieve the enumeration of the life stages and dead vs alive for each pest
+dead_alive_df <- get_dead_alive(
+  connection = db_conn,
+  diagnostic_request_data = diagnostic_request_df
+)
+
+#retrieve the pest taxonomy information since the final determination doesn't actually give a name; it is connected with PEST_TAXON_ID
+pest_taxonomy_df <- get_pest_taxonomy(
+  connection = db_conn,
+  pest_diagnostics = diag_determ_records
+)
+
+pest_diagnostics <- gather_diagnostics(
+  diagnostic_requests = diagnostic_request_df,
+  diagnostic_determinations = diag_determ_records,
+  failed_determinations = failed_determinations,
+  enumerated_life_stages = dead_alive_df,
+  pest_taxonomy = pest_taxonomy_df
+)
+
+message(paste("Retrieved", nrow(pest_diagnostics), "pest diagnostic records"))
+```
+
+## Arrive at a single, final determination
+Interceptions of various life stages or liveliness may lead to multiple diagnostic requests. This function reduces duplication that is created through this and several other processes.
+```{r process data to final determinations}
+# Process to get final determinations using package function
+pest_diagnostics <- parse_final_determination(pest_diagnostics)
+
+
+message(paste("After processing:", nrow(pest_diagnostics), "final determination records"))
+```
+
+# Merge shipment info with diagnostic results
+ ## This chunk can still be converted into a function and stored elsewhere for clearer code here
+```{r combine shipment and diagnostics}
+# Merge pest diagnostics with shipment records to get full context
+shipment_records <- shipment_records %>%
+  left_join(pest_diagnostics, by = "COMMODITY_ID")
+
+message(paste("After merging diagnostics:", nrow(shipment_records), "shipment records with diagnostics"))
+
+# Collapse multiple life stage records for same commodity-pest combination
+# Sum all NUMBER_* columns (life stages) for each unique commodity-pest pair
+shipment_records_collapsed <- shipment_records %>%
+  group_by(COMMODITY_ID, PEST_TAXON_SIMPLE_NAME) %>%
+  summarise(
+    # Sum all life stage counts
+    across(starts_with('NUMBER_'), ~sum(.x, na.rm = TRUE)),
+    # Keep first value for all other columns (not the grouping vars or NUMBER_ cols)
+    across(!starts_with('NUMBER_') & !any_of(c("COMMODITY_ID", "PEST_TAXON_SIMPLE_NAME")), ~first(.x)),
+    .groups = 'drop'
+  )
+
+message(paste("After collapsing life stages:", nrow(shipment_records) - nrow(shipment_records_collapsed), "duplicate pest identifications were removed"))
+
+# Use the collapsed version for downstream analysis
+shipment_records <- shipment_records_collapsed
+rm(shipment_records_collapsed)
+print(head(shipment_records))
+```
+
+# Save Module A output for further processing
+At this point we have a list of interceptions, commodities, and pest information bundled up, with a focus on origin country and commodity but also tracking the port information.
+ - Other use cases may extract this information and use it elsewhere.
+ - We will pass it to Module B.
+
+```{r export module A results}
+# Save results for Module B
+output_dir <- "../outputs"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Export as CSV for universal compatibility
+write_csv(shipment_records, file.path(output_dir, "port_example_module_a_output.csv"))
+
+# Export as RDS for R-specific use (faster loading)
+saveRDS(shipment_records, file.path(output_dir, "port_example_module_a_output.rds"))
+
+message("Module A output saved to:", file.path(output_dir, "port_example_module_a_output.csv"))
+message("Dataset contains ", nrow(shipment_records), " records with ", ncol(shipment_records), " columns")
+```

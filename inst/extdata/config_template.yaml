@@ -1,0 +1,53 @@
+# Example configuration file for AgCargoPestRisk pipeline
+# Copy this to your project and modify as needed
+
+# Date Range
+begin_date: "2019-10-01"
+end_date: "2025-04-01"
+
+# Data Directories
+opep_directory: "Inputs/Data/OPEP"
+fnw_directory: "Inputs/Data/FNW"
+hli_directory: "Inputs/Data/High and low impact pests"
+
+# Output Settings
+output_directory: "outputs"
+export_results: TRUE
+include_timestamp: TRUE
+
+# Risk Score Parameters
+risk_scores:
+  quarantine_pest: 0.5
+  uncategorized_pest: 0.25
+  nonquarantine_pest: 0.0
+  
+# Program Pest Scores
+program_scores:
+  caps_national_priority: 1.0
+  opep_noncandidate: 0.3
+  ppq_program_pest: 1.0
+  ppq_select_agents: 1.0
+
+# Database Settings
+database:
+  limit_records: 10000  # Set to NULL for no limit
+  
+# Filtering (optional)
+filters:
+  ports: NULL  # e.g., ["Miami, FL", "New York, NY"] or NULL for all
+  commodities: NULL  # e.g., ["Mango", "Apple"] or NULL for all
+  pathways: NULL  # e.g., ["Air", "Sea"] or NULL for all
+  origins: NULL  # e.g., ["Mexico", "China"] or NULL for all
+
+# Analysis Options
+analysis:
+  generate_plots: TRUE
+  risk_threshold_high: 0.5
+  risk_threshold_medium: 0.25
+  
+# Reporting
+reporting:
+  include_taxonomy_details: TRUE
+  include_port_summaries: TRUE
+  include_commodity_summaries: TRUE
+  include_origin_summaries: TRUE

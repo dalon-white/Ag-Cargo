@@ -1,0 +1,148 @@
+# Module C: Analysis and Summarization
+
+This module creates summaries and pathway assessments from pest risk data.
+Now simplified using the AgCargoPestRisk package functions.
+
+## Overview
+The purpose of this module is to take pest taxonomies with impact scores and summarize them.
+This handles both:
+1. Simple pest lists with impact scores (pest taxonomy summaries)
+2. Complete datasets with shipment details (pathway and commodity summaries)
+
+```{r load libraries, message=FALSE, warning=FALSE}
+# Source package functions during development
+source("../R/analysis_functions.R")
+source("../R/utils.R")
+
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(binom)
+```
+
+```{r load data from module b}
+# Load pest risk data from Module B output
+input_file <- "../outputs/manifest_example_module_b_output.rds"
+
+if (file.exists(input_file)) {
+  records <- readRDS(input_file)
+  message("Loaded ", nrow(records), " records from Module B")
+} else {
+  # Fallback to CSV if RDS not available
+  csv_file <- "../outputs/manifest_example_module_b_output.csv"
+  if (file.exists(csv_file)) {
+    records <- read_csv(csv_file)
+    message("Loaded ", nrow(records), " records from Module B (CSV)")
+  } else {
+    stop("No Module B output found. Please run Module B first.")
+  }
+}
+```
+
+# Summarize pest impact rating sources
+
+```{r summarize pest taxonomies}
+
+# Summary of risk score distribution
+impact_summary <- records %>%
+  summarise(
+    total_records = n(),
+    mean_risk = mean(pest_impact, na.rm = TRUE),
+    high_risk_count = sum(pest_impact > 0.5, na.rm = TRUE),
+    medium_risk_count = sum(pest_impact >= 0.25 & pest_impact <= 0.5, na.rm = TRUE),
+    low_risk_count = sum(pest_impact > 0 & pest_impact < 0.25, na.rm = TRUE),
+    zero_risk_count = sum(pest_impact == 0, na.rm = TRUE),
+    quarantined = sum(quarantine_status_at_port == "Quarantine", na.rm = TRUE)
+  )
+
+print("Impact Score Summary:")
+print(impact_summary)
+View(impact_summary)
+```
+
+# Create a parent summary table
+Can build in utility for this, such as an web-based interface that allows drill down charts
+
+```{r pest impact by pathways}
+parent_summary_table <- records |> 
+  dplyr::select(
+    INSPECTION_DATETIME,
+
+    COMMODITY_COMMON_NAME,
+    COUNTRY_OF_ORIGIN_NAME,
+    PATHWAY,
+    REGION,
+    LOCATION_STATE_CODE,
+    CBP_PORT_NUMBER,
+
+    HOST_PROXIMITY,
+    QUANTITY,
+
+    PEST_TAXON_SIMPLE_NAME,
+    NUMBER_ALIVE_ADULTS,
+    NUMBER_ALIVE_PUPAE,
+    NUMBER_ALIVE_CYSTS,
+    NUMBER_ALIVE_EGGS,
+    NUMBER_ALIVE_IMMATURE,
+
+    pest_impact
+  )
+
+```
+
+# Create pathway summary
+```{r pathway summary}
+port_pathway_summary <- parent_summary_table |>
+  group_by(
+    COMMODITY_COMMON_NAME,
+    COUNTRY_OF_ORIGIN_NAME,
+    PATHWAY,
+    REGION,
+    LOCATION_STATE_CODE,
+    CBP_PORT_NUMBER
+  ) %>%
+  summarise(
+    total_detections = n(),
+    mean_risk = mean(pest_impact, na.rm = TRUE),
+    high_risk_detections = sum(pest_impact > 0.5, na.rm = TRUE),
+    medium_risk_detections = sum(pest_impact >= 0.25 & pest_impact <= 0.5, na.rm = TRUE),
+    low_risk_detections = sum(pest_impact > 0 & pest_impact < 0.25, na.rm = TRUE),
+    zero_risk_detections = sum(pest_impact == 0, na.rm = TRUE),
+    .groups = 'drop',
+    avg_n_life_stages = (sum(
+      !is.na(NUMBER_ALIVE_ADULTS)) + 
+      sum(!is.na(NUMBER_ALIVE_PUPAE)) + 
+      sum(!is.na(NUMBER_ALIVE_EGGS)) + 
+      sum(!is.na(NUMBER_ALIVE_IMMATURE)) + 
+      sum(!is.na(NUMBER_ALIVE_CYSTS))) / n()
+  ) %>%
+  arrange(desc(mean_risk))
+
+#calculate probability of a high risk pest
+port_pathway_summary <- port_pathway_summary |>
+  mutate(
+    #calculate basic proportion
+    prob_high_risk_pest = high_risk_detections / total_detections
+  ) |>
+  # add confidence intervals
+  rowwise() %>%
+  mutate(ci = list(
+    binom.confint(
+      high_risk_detections, 
+      total_detections, 
+      methods = "wilson", 
+      conf.level = 0.95)
+      ), 
+      ci_lower_95 = ci$lower, 
+      ci_upper_95 = ci$upper ) |>
+       ungroup() |> 
+       select(-ci) |>
+       arrange(desc(prob_high_risk_pest))
+
+
+
+
+print(head(port_pathway_summary, 15))
+View(port_pathway_summary)
+
+```

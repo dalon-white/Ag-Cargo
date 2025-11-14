@@ -1,0 +1,174 @@
+# Module B: Pest Impact Assessment
+
+This module loads pest taxonomies and assigns impact scores based on OPEP, FNW, and HLI assessments.
+Now simplified using the AgCargoPestRisk package functions.
+
+# Overview
+- Load pest taxonomies from Module A
+- Load parameters for pest impact scoring
+- Access FNW, HLI, and OPEP data from local files or database
+- Assign impact scores to each pest based on taxonomy matching
+- Output final determination
+- Identify quarantine status of pests identified
+- Calculate pest impact scores
+
+
+# Prepare connections, source files, etc.
+
+```{r load libraries, message=FALSE, warning=FALSE}
+# Load the AgCargoPestRisk package (preferred method)
+# If developing, use devtools::load_all() instead of sourcing individual files
+devtools::load_all("..") # Loads package from parent directory
+source(here::here("R","pest_impact_utils.R"))
+source(here::here("R","database_functions.R"))
+source(here::here("R","data_processing.R"))
+
+# Or if package is installed:
+# library(AgCargoPestRisk)
+
+library(dplyr)
+library(readr)
+
+# Connect to PPRA database
+ppra_conn <- connect_ppra()
+```
+# Load data from module A
+We are accessing information about pests; it is important to have a genus and species taxonomy identified for the following steps
+
+Dont forget to change the input file names!
+
+```{r load data from module a}
+# complete_records will be the running name for the combined information about shipment and pest generated in module A.
+
+# Load pest taxonomies from Module A output
+input_file <- "../outputs/port_example_module_a_output.rds"
+
+if (file.exists(input_file)) {
+  complete_records <- readRDS(input_file)
+  message("Loaded ", nrow(complete_records), " records from Module A")
+} else {
+  # Fallback to CSV if RDS not available
+  csv_file <- "../outputs/port_example_module_a_output.csv"
+  if (file.exists(csv_file)) {
+    complete_records <- read_csv(csv_file)
+    message("Loaded ", nrow(complete_records), " records from Module A (CSV)")
+  } else {
+    stop("No Module A output found. Please run Module A first.")
+  }
+}
+```
+
+# Set pest impact parameters
+Here we set our impact parameters for pest risk assessment:
+Quarantine status:
+ - on a 0 - 1 scale
+ - higher values indicate greater risk
+  - quarantine is assumed middling - could be low impact or high, but on average medium
+  - uncategorized is assumed to be somewhere between no impact and medium impact; if there was obviousness to its impact it would probably be considered quarantine
+  - non-quarantine is assumed to be no impact, as there is no action associated with it
+
+HLI, OPEP, and FNW:
+ - HLI scores range from 0 - 1 based on multiple factors including CAPS national priority, OPEP status, PPQ program pest status, and select agent status
+ - OPEP pests and FNW have impact probabilities based on quantification of various biological factors
+   - opep noncandidate pests are those that were important enough to start the OPEP process but were quickly deemed to be less significant and not worth continuing. This is similar to an 'uncategorized' pest.
+  - CAPS, program pests, and select agents are actively under control/being monitored
+
+```{r load impact parameters}
+# Parameters for pest impact scoring
+  quarantine_pest_value = 0.5
+  uncategorized_pest_value = 0.25
+  nonquarantine_pest_value = 0
+  caps_national_priority_score = 1
+  opep_noncandidate_score = 0.3
+  ppq_program_score = 1
+  ppq_select_agents_score = 1
+```
+# Gather pest impact information from PPRA's server
+
+These data have already been uploaded to PPRA's server in my PPRA-server-uploads repo
+ - OPEP needs to be updated
+ - Check if FNW and HLI need to be updated
+
+
+
+```{r Gather pest impact scores}
+# Get FNW data from PPRA server
+FNW <- get_FNW(connection = ppra_conn)
+FNW <- FNW |> mutate(
+  FNW_score = calc_pest_impact(
+    high_impacts = `Major.Invader`,
+    mod_impacts = `Minor.Invader`,
+    low_impacts = `Non.Invader.Invader`,
+    #can adjust if desired; default = 2
+    high_impact_weight = 1,
+    #can adjust if desired; default = 1
+    mod_impact_weight = .5,
+    #can adjust if desired; default = 0
+    low_impact_weight = 0
+  )
+) |> adjust_FNW_pest_impact()
+
+HLI <- get_HLI(connection = ppra_conn)
+
+# Get OPEP data from PPRA server
+OPEP <- get_OPEP(connection = ppra_conn) 
+```
+
+# Integrate pest risk into shipment information
+## Append our lists to shipment information
+```{r integrate pest assessments}
+# Define the weights. These dictate the calculated score
+high_impact_weight = 1
+mod_impact_weight = 0.5
+low_impact_weight = 0
+# Integrate OPEP assessments using package function
+complete_records <- integrate_opep_impacts(complete_records, OPEP)
+message("Integrated OPEP assessments")
+complete_records <- integrate_hli_impacts(complete_records, HLI)
+message("Integrated HLI assessments")
+complete_records <- integrate_fnw_impacts(complete_records, FNW)
+message("Integrated FNW assessments")
+
+```
+
+## Identify Quarantine Status at Port of Entry
+Use the following to check if theres any issues with isolating port:
+  complete_records |> count(LOCATION_STATE_CODE, CBP_PORT_NUMBER)
+
+```{r identify quarantine status}
+# Identify quarantine status using package function
+# The purpose of this step is that quarantine status is only reported of the pest, not directly of the outcome of the pest and the port. Therefore, we determine the appropriate status based on where the port is.
+complete_records <- complete_records |> get_quarantine_status()
+```
+
+
+## Summarize the knowledge of pest impact
+Parsing through the different areas of pest impact
+```{r calculate final pest risk scores}
+# Calculate final risk scores using package function
+complete_records <- calculate_pest_impact(
+  complete_records,
+  quarantine_value = quarantine_pest_value,
+  uncategorized_value = uncategorized_pest_value,
+  nonquarantine_value = nonquarantine_pest_value
+)
+```
+
+
+# Save output for impact summarization
+```{r save Module B}
+# Save results for Module C
+output_dir <- "../outputs"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Export as CSV for universal compatibility
+write_csv(complete_records, file.path(output_dir, "port_example_module_b_output.csv"))
+
+# Export as RDS for R-specific use (faster loading)
+saveRDS(complete_records, file.path(output_dir, "port_example_module_b_output.rds"))
+
+message("Module B output saved to:", file.path(output_dir, "port_example_module_b_output.csv"))
+message("Dataset contains ", nrow(complete_records), " records with pest impact scores")
+```

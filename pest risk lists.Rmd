@@ -265,7 +265,7 @@ db_conn <- connect_db(database=db)
 
 mvw_diagnostic_results <- tbl(
   db_conn,
-  sql("select TOP 1000 * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results_Current_all]")
+  sql("select TOP 10000 * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
 )
 
 df_diagnostic_results <- mvw_diagnostic_results %>% 
@@ -314,7 +314,7 @@ Correct based on quarantine status at port of entry as well as parse the final d
 #call diagnostic determination data; written flexibly because QUARANTINE_STATUS_MAINLAND just chagned to QUARANTINE_STATUS_CONUS and it differs by table
 get.determinations <- function(connection) {
   # First, get all columns to avoid SQL errors if column names change
-  result <- tbl(connection, sql("SELECT TOP 100000
+  result <- tbl(connection, sql("SELECT
                        *
                        FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[SYS2_BRG_DIAGNOSTIC_DETERMINATION]")) |> 
     collect()
@@ -599,47 +599,48 @@ I left off here (6/2/25) - I just realized there's a QUARANTINE_STATUS column in
 #   df_diagnostic_results$STATE_CD == 'PR', 'QUARANTINE_STATUS_PUERTO_RICO'
 # )
 
-#check that QUARANTINE_STATUS is quarantine status at POE and not of mainland.
-mvw_diagnostic_results <- tbl(
-  db_conn,
-  sql("select * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
-)
+# #check that QUARANTINE_STATUS is quarantine status at POE and not of mainland.
+# mvw_diagnostic_results <- tbl(
+#   db_conn,
+#   sql("select * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
+# )
+# 
+# df_diagnostic_results <- mvw_diagnostic_results %>% 
+#   filter(
+#     INSPECTION_DATE >= begin_date,
+#     INSPECTION_DATE <= end_date,
+#     DETERMINATION_TYPE == 'Final ID',
+#     SUBCATEGORY %in% c("CBP", "PIS", "SITC", "Non-PIS PPQ"),
+#     !is.na(PEST_TAXONOMIC_NAME)
+#   ) %>% 
+#   collect()
+# 
+# #records where quarantine status in mainland is diff from PR or hawaii
+# test <- df_diagnostic_results |> mutate(non_match = case_when(QUARANTINE_STATUS_MAINLAND != QUARANTINE_STATUS_HAWAII | QUARANTINE_STATUS_MAINLAND != QUARANTINE_STATUS_PUERTO_RICO ~ 1,
+#                                                       .default = 0 )) |> 
+#   dplyr::filter(non_match > 0)
+# 
+# #does quarantin estatus mathc hawaii or puerto rico?
+# test2 <- test |> 
+#   mutate(foreign_match = case_when(
+#     QUARANTINE_STATUS == QUARANTINE_STATUS_HAWAII | QUARANTINE_STATUS == QUARANTINE_STATUS_PUERTO_RICO ~ 1,
+#     .default = 0
+#   )) |> 
+#   dplyr::filter(foreign_match > 0)
+# #a lot of these had no phytosanitary action AND they were not found in hawaii or puerto rico - but QUARANTINE_STATUS does not align with mainland quarantine status..
+# 
+# #where were the POEs?
+# test3 <- df_diagnostic_results |> filter(QUARANTINE_STATUS != QUARANTINE_STATUS_MAINLAND) |> count(PORT_OF_ARRIVAL_NAME)
+# # I see entries from PR and HI, so this is not following just QUARANTINE STATUS MAINLAND
+# #not exactly sure what QUARANTINE_STATUS is reflecting, though...
+# test4 <- df_diagnostic_results |> 
+#   filter(QUARANTINE_STATUS != QUARANTINE_STATUS_MAINLAND) |> 
+#   count(PORT_OF_ARRIVAL_NAME,QUARANTINE_RECOMMENDATION)
+# #The majority of these are no phytosanitary action as well
+# 
+# #Think I just need to get up with DART and see what this column is about.
 
-df_diagnostic_results <- mvw_diagnostic_results %>% 
-  filter(
-    INSPECTION_DATE >= begin_date,
-    INSPECTION_DATE <= end_date,
-    DETERMINATION_TYPE == 'Final ID',
-    SUBCATEGORY %in% c("CBP", "PIS", "SITC", "Non-PIS PPQ"),
-    !is.na(PEST_TAXONOMIC_NAME)
-  ) %>% 
-  collect()
-
-#records where quarantine status in mainland is diff from PR or hawaii
-test <- df_diagnostic_results |> mutate(non_match = case_when(QUARANTINE_STATUS_MAINLAND != QUARANTINE_STATUS_HAWAII | QUARANTINE_STATUS_MAINLAND != QUARANTINE_STATUS_PUERTO_RICO ~ 1,
-                                                      .default = 0 )) |> 
-  dplyr::filter(non_match > 0)
-
-#does quarantin estatus mathc hawaii or puerto rico?
-test2 <- test |> 
-  mutate(foreign_match = case_when(
-    QUARANTINE_STATUS == QUARANTINE_STATUS_HAWAII | QUARANTINE_STATUS == QUARANTINE_STATUS_PUERTO_RICO ~ 1,
-    .default = 0
-  )) |> 
-  dplyr::filter(foreign_match > 0)
-#a lot of these had no phytosanitary action AND they were not found in hawaii or puerto rico - but QUARANTINE_STATUS does not align with mainland quarantine status..
-
-#where were the POEs?
-test3 <- df_diagnostic_results |> filter(QUARANTINE_STATUS != QUARANTINE_STATUS_MAINLAND) |> count(PORT_OF_ARRIVAL_NAME)
-# I see entries from PR and HI, so this is not following just QUARANTINE STATUS MAINLAND
-#not exactly sure what QUARANTINE_STATUS is reflecting, though...
-test4 <- df_diagnostic_results |> 
-  filter(QUARANTINE_STATUS != QUARANTINE_STATUS_MAINLAND) |> 
-  count(PORT_OF_ARRIVAL_NAME,QUARANTINE_RECOMMENDATION)
-#The majority of these are no phytosanitary action as well
-
-#Think I just need to get up with DART and see what this column is about.
-
+#The answer is you can't use this column.. Need to just go with quarantine status 
 ```
 
 Left off here 6/2/25
@@ -660,7 +661,9 @@ df_diagnostic_results <- df_diagnostic_results |> mutate(pest.risk = case_when(
   #anything that doesn't fit these is probably an error or needs to be reviewed; return as 0
   .default = 0
 ))
+```
 
+```{r summary pest impact by commodity}
 commodity_pest_risk = df_diagnostic_results |> 
   group_by(PORT_OF_ENTRY_NAME,INSPECTION_PATHWAY,COMMODITY,ORIGIN_NM) |> summarise(mean.pest.risk = mean(pest.risk) )
 

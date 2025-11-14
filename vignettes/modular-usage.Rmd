@@ -1,0 +1,238 @@
+---
+title: "Modular Usage: Using Individual Functions"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Modular Usage: Using Individual Functions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+# Modular Usage
+
+While the complete pipeline is convenient, you may want to use individual functions for:
+
+- **Custom workflows** that don't fit the standard pipeline
+- **Integration** with existing analysis code
+- **Debugging** specific steps
+- **Performance** optimization by caching intermediate results
+
+## Module A: Database Functions
+
+### Connecting to the Database
+
+```{r database-connection}
+library(AgCargoPestRisk)
+
+# Connect to PPQ database
+conn <- connect_db()
+```
+
+### Retrieving Diagnostic Results
+
+```{r get-diagnostics}
+# Get diagnostic results for date range
+diagnostic_data <- get_diagnostic_results(
+  connection = conn,
+  begin_date = "2024-01-01",
+  end_date = "2024-12-31",
+  limit = 50000  # Adjust as needed
+)
+
+# Get determination details
+determination_data <- get_determinations(conn)
+
+# Always close connection when done
+DBI::dbDisconnect(conn)
+```
+
+### Processing Diagnostic Data
+
+```{r process-diagnostics}
+# Join and parse to final determinations
+diagnostic_data <- diagnostic_data %>%
+  left_join(determination_data, 
+           by = intersect(colnames(diagnostic_data), 
+                         colnames(determination_data))) %>%
+  parse_final_determination()
+```
+
+## Module B: Data Processing
+
+### Loading Pest Impact Data
+
+```{r load-pest-data}
+# Load OPEP data
+opep_data <- load_opep_data("path/to/OPEP")
+
+# Load FNW data with custom quarantine value
+fnw_data <- load_fnw_data("path/to/FNW", quarantine_pest_value = 0.5)
+
+# Load HLI data with custom scores
+hli_data <- load_hli_data(
+  "path/to/HLI",
+  caps_score = 1.0,
+  opep_score = 0.3,
+  ppq_program_score = 1.0,
+  select_agents_score = 1.0
+)
+```
+
+## Module C: Risk Assessment
+
+### Integrating Pest Assessments
+
+You can integrate assessments individually or in combination:
+
+```{r integrate-assessments}
+# Option 1: Integrate only OPEP
+diagnostic_data_opep <- integrate_opep_impacts(diagnostic_data, opep_data)
+
+# Option 2: Integrate all three
+diagnostic_data_full <- diagnostic_data %>%
+  integrate_opep_impacts(opep_data) %>%
+  integrate_fnw_impacts(fnw_data) %>%
+  integrate_hli_impacts(hli_data)
+```
+
+### Calculating Risk Scores
+
+```{r calculate-risk}
+# Calculate final risk scores
+diagnostic_data_scored <- calculate_pest_risk(
+  diagnostic_data_full,
+  quarantine_value = 0.5,
+  uncategorized_value = 0.25,
+  nonquarantine_value = 0
+)
+```
+
+## Module D: Analysis Functions
+
+### Summarizing Results
+
+```{r summarize}
+# Summarize by commodity-origin combinations
+commodity_summary <- summarize_commodity_pest_risk(diagnostic_data_scored)
+
+# Create pathway assessment
+pathway_data <- create_pathway_assessment(commodity_summary)
+
+# Generate risk statistics
+port_summary <- generate_risk_summary(pathway_data, 
+                                     group_vars = "PORT_OF_ENTRY_NAME")
+
+commodity_summary <- generate_risk_summary(pathway_data, 
+                                          group_vars = "COMMODITY")
+```
+
+### Exporting Results
+
+```{r export}
+# Export with timestamp
+export_results(pathway_data, "pathway_assessment", "outputs")
+
+# Export without timestamp (for automated pipelines)
+export_results(pathway_data, "latest_assessment", "outputs", 
+              include_timestamp = FALSE)
+```
+
+## Example: Custom Workflow for Specific Port
+
+Here's a complete example of analyzing just one port with only OPEP data:
+
+```{r custom-workflow}
+library(AgCargoPestRisk)
+library(dplyr)
+
+# 1. Get data
+conn <- connect_db()
+diagnostic_data <- get_diagnostic_results(conn, "2024-01-01", "2024-12-31")
+determ_data <- get_determinations(conn)
+DBI::dbDisconnect(conn)
+
+# 2. Process and filter for Miami
+miami_data <- diagnostic_data %>%
+  left_join(determ_data, by = intersect(colnames(.), colnames(determ_data))) %>%
+  parse_final_determination() %>%
+  filter(grepl("Miami", PORT_OF_ENTRY_NAME, ignore.case = TRUE))
+
+# 3. Load only OPEP data (skip FNW and HLI)
+opep_data <- load_opep_data("path/to/OPEP")
+
+# 4. Integrate OPEP and calculate risk
+miami_scored <- miami_data %>%
+  integrate_opep_impacts(opep_data) %>%
+  mutate(
+    # Custom risk calculation
+    risk_score = case_when(
+      !is.na(Predicted_pest_impact_in_US) ~ Predicted_pest_impact_in_US,
+      QUARANTINE_STATUS_CONUS == "Q" ~ 0.5,
+      TRUE ~ 0
+    )
+  )
+
+# 5. Summarize
+miami_summary <- miami_scored %>%
+  group_by(COMMODITY, ORIGIN_NM) %>%
+  summarise(
+    detections = n(),
+    mean_risk = mean(risk_score, na.rm = TRUE),
+    opep_pests = sum(!is.na(Predicted_pest_impact_in_US)),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(mean_risk))
+
+# 6. Export
+export_results(miami_summary, "miami_opep_analysis", "outputs")
+```
+
+## Example: Adding Custom Risk Factors
+
+You can extend the risk assessment with your own factors:
+
+```{r custom-factors}
+# Add custom risk adjustments
+diagnostic_data_custom <- diagnostic_data_scored %>%
+  mutate(
+    # Increase risk for certain families
+    family_risk_multiplier = case_when(
+      PEST_TAXONOMY_FAMILY == "Tephritidae" ~ 1.2,  # Fruit flies
+      PEST_TAXONOMY_FAMILY == "Curculionidae" ~ 1.1,  # Weevils
+      TRUE ~ 1.0
+    ),
+    # Adjust based on time of year (hypothetical)
+    seasonal_risk = case_when(
+      month(INSPECTION_DATE) %in% c(6, 7, 8) ~ 1.1,  # Summer
+      TRUE ~ 1.0
+    ),
+    # Calculate adjusted risk
+    adjusted_risk = pest.risk * family_risk_multiplier * seasonal_risk
+  )
+
+# Summarize with custom risk
+custom_summary <- diagnostic_data_custom %>%
+  group_by(PORT_OF_ENTRY_NAME, COMMODITY, ORIGIN_NM) %>%
+  summarise(
+    mean_standard_risk = mean(pest.risk, na.rm = TRUE),
+    mean_adjusted_risk = mean(adjusted_risk, na.rm = TRUE),
+    risk_increase = mean_adjusted_risk - mean_standard_risk,
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(mean_adjusted_risk))
+```
+
+## Tips for Modular Usage
+
+1. **Cache intermediate results**: Save outputs of expensive operations (database queries, data loading) as RDS files
+2. **Use pipes**: Chain functions together for readable workflows
+3. **Mix and match**: Combine package functions with your own custom code
+4. **Start simple**: Begin with one module, then expand as needed
+5. **Document dependencies**: Note which functions depend on outputs from others

@@ -1,0 +1,30 @@
+Package: AgCargoPestRisk
+Title: Agricultural Cargo Pest Risk Assessment Pipeline
+Version: 0.1.0
+Authors@R: 
+    person("Dalon", "White", , "dalon.white@usda.gov", role = c("aut", "cre"),
+           comment = c(ORCID = "YOUR-ORCID-ID"))
+Description: A comprehensive toolkit for assessing pest risks associated with 
+    agricultural cargo imports. Provides functions for retrieving diagnostic data,
+    integrating pest impact assessments (OPEP, FNW, HLI), and calculating risk
+    scores for commodity-origin combinations at ports of entry.
+License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
+    license
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.1
+Imports: 
+    DBI,
+    dplyr,
+    magrittr,
+    odbc,
+    readr,
+    stringr,
+    tidyr,
+    lubridate
+Suggests: 
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3
+VignetteBuilder: knitr

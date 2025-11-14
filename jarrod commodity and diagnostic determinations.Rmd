@@ -1,0 +1,276 @@
+---
+title: "interception records with diagnostic results"
+author: "Dalon White"
+date: "2025-06-13"
+output: html_document
+
+params:
+  CATEGORY: ["AQI"]
+  SUBCATEGORY: ["CBP","PIS"]
+  begin_date: 2020-01-01
+  end_date: 
+  commodities: ['Philodendron','philo','citrus']
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages}
+install.packages(pacman)
+pacman::p_load(tidyverse, dplyr, stringr)
+```
+
+# Identify categories/subcategories
+
+Call the category and subcategories in the yaml header
+
+Categories can be "AQI" or "predeparture" or "domestic"
+
+Subcategories can be "PIS", "CBP", "SITC", "Non-PIS PPQ"
+
+```{r create environmental variables from the yaml header}
+
+cats = params$CATEGORY
+subcats = params$SUBCATEGORY
+
+begin_date <- as.Date(params$begin_date)
+#End date is the specified end date or the current date
+end_date <- as.Date(if(exists("params$end_date")==FALSE){
+  Sys.Date()
+} else {
+  params$end_date
+})
+
+commodities = params$commodities
+```
+
+## Retrieve pest identifications
+
+```{r query-pest-diagnostics}
+#function for connecting to database####
+connect_db <- function(database) {
+  DBI::dbConnect(
+                 odbc::odbc(),
+                 .connection_string =
+"Driver=SQL Server;
+                       Server=AAP00VA3PPQSQL0\\MSSQLSERVER,1433;
+                        Database=PPQ_AQI_ARMDMV2;
+trusted_connection=yes")
+}
+#connection to database
+db_conn <- connect_db(database=db)
+
+#We're going to use results because _Current doesn't ahve inspection date or category. Noah said this table includes tentative IDs as well but we'll filter those out anyways so that doesn't matter
+mvw_diagnostic_results <- tbl(
+  db_conn,
+  sql("select TOP 10000 * FROM [APHIS_Imports].[dbo].[mvw_Diagnostic_Results]")
+)
+
+df_diagnostic_results <- mvw_diagnostic_results %>% 
+  filter(
+    INSPECTION_DATE >= begin_date,
+    INSPECTION_DATE <= end_date,
+    DETERMINATION_TYPE == 'Final ID',
+    CATEGORY %in% cats,
+    SUBCATEGORY %in% subcats,
+    !is.na(PEST_TAXONOMIC_NAME)
+  ) %>% 
+  collect()
+```
+
+## Change quarantine status to be quarantine status at the POE
+
+This is an optional chunk; the code will run if you skip it
+
+Basically this will identify where the commodity came through (PoE, not PoArrival) and determine the quarantine status at that location.
+
+```{r correct quarantine status to be quarantine status at POE}
+#call diagnostic determination data; written flexibly because QUARANTINE_STATUS_MAINLAND just chagned to QUARANTINE_STATUS_CONUS and it differs by table
+get.determinations <- function(connection) {
+  # First, get all columns to avoid SQL errors if column names change
+  result <- tbl(connection, sql("SELECT TOP 10000
+                       *
+                       FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[SYS2_BRG_DIAGNOSTIC_DETERMINATION]")) |> 
+    collect()
+  
+  # Get the actual column names from the retrieved data
+  actual_cols <- colnames(result)
+  
+  # Define mandatory columns we need
+  base_cols <- c(
+    "ID",
+    "DIAGNOSTIC_REQUEST_ID",
+    "PEST_TAXON_ID",
+    "PEST_TAXON_SIMPLE_NAME",
+    "PEST_TAXONOMIC_NAME",
+    "ID_AUTHORITY",
+    "DETERMINATION_TYPE_ID",
+    "DETERMINED_BY_GROUP_ID",
+    "DETERMINATION_DATETIME",
+    "QUARANTINE_STATUS_HAWAII",
+    "QUARANTINE_STATUS_PUERTO_RICO"
+  )
+  
+  # Check which quarantine status columns exist and add them
+  quarantine_mainland_col <- NULL
+  if ("QUARANTINE_STATUS_MAINLAND" %in% actual_cols) {
+    quarantine_mainland_col <- "QUARANTINE_STATUS_MAINLAND"
+  } else if ("QUARANTINE_STATUS_CONUS" %in% actual_cols) {
+    quarantine_mainland_col <- "QUARANTINE_STATUS_CONUS"
+  }
+  
+  # Create the final column selection list
+  select_cols <- c(base_cols, quarantine_mainland_col)
+  select_cols <- select_cols[!is.null(select_cols)]
+  
+  # Select the needed columns
+  result <- result |> 
+    dplyr::select(all_of(select_cols)) |> 
+    rename("DIAGNOSTIC_DETERMINATION_ID" = "ID")
+  
+  # If needed, standardize column names for downstream code
+  if (!is.null(quarantine_mainland_col) && quarantine_mainland_col == "QUARANTINE_STATUS_MAINLAND") {
+    result <- result |> rename("QUARANTINE_STATUS_CONUS" = "QUARANTINE_STATUS_MAINLAND")
+  }
+  
+  return(result)
+}
+
+```
+
+# Filter diagnostic determinations to the most authoritative final ID
+
+unfortunately the dataset drops the diagnostic group number which is the easiest way to identify hierarchy in who's the most authoritative. So, connect that back first
+
+```{r connect diagnostician expertise}
+get_determination_group <- function(connection) {
+   result = tbl(
+  db_conn,
+  sql("select TOP 10000 * FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[REF_DETERMINED_BY_GROUP]")
+   ) |> 
+     dplyr::select(ID,DETERMINED_GROUP) |> 
+     rename('DETERMINED_BY_GROUP_ID' = 'ID') |> 
+     collect()
+}
+
+determination_group <- get_determination_group(db_conn)
+
+df_diagnostic_results <- df_diagnostic_results |> left_join(determination_group, by = c("DETERMINED_BY_GROUP_NAME" = "DETERMINED_GROUP"))
+```
+
+It also does not keep track of the ID type number
+
+```{r connect ID type}
+get_determination_type <- function(connection) {
+   result = tbl(
+  db_conn,
+  sql("select TOP 10000 * FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[REF_DETERMINATION_TYPE]")
+   ) |> 
+     dplyr::select(ID,DETERMINATION_TYPE) |> 
+     rename('DETERMINATION_TYPE_ID' = 'ID') |> 
+     collect()
+}
+
+determination_type <- get_determination_type(db_conn)
+
+df_diagnostic_results <- df_diagnostic_results |> left_join(determination_type, by = c("DETERMINATION_TYPE" = "DETERMINATION_TYPE"))
+```
+
+```{r parse diagnostic determinations}
+df_diagnostic_results = if(exists("diag.determ.records") == TRUE){
+  df_diagnostic_results |> 
+    left_join(diag.determ.records,by=intersect(colnames(df_diagnostic_results), colnames(diag.determ.records)
+                                               )
+    )
+  } else {
+    df_diagnostic_results 
+         }
+
+parse_final_determination = function(data) {
+  data |> 
+    group_by(DIAGNOSTIC_REQUEST_ID) |> 
+    #Andy Carmichael says if that the most recent "DETERMINATION_CREATED_DATETIME" should be the most accurate, with very rare exceptions.  (The only time I can think of is if there was a molecular ID request, and it failed.)   In that case there DETERM_NOT_POSS_FLAG should be flagged.  
+    #Filter for rows that are not a failed diagnostic determination
+    dplyr::filter(is.na(DIAGNOSTIC_DETERMINATION_NOT_POSSIBLE_REASON)) |> 
+    #Filter the determination type - final has the highest TYPE_ID number
+    dplyr::filter(DETERMINATION_TYPE_ID==max(DETERMINATION_TYPE_ID)) |> 
+    #Filter for who ID'd it - the group_ID is a hierarchy of expertise, so take the max ID
+    dplyr::filter(DETERMINED_BY_GROUP_ID == max(DETERMINED_BY_GROUP_ID)) |> 
+    #The most recent is in practice the most correct - sometimes a final ID will be corrected at a later date, or someone will review for training or spot checking
+    dplyr::filter(DETERMINATION_DATETIME == max(DETERMINATION_DATETIME))
+}
+
+df_diagnostic_results <- parse_final_determination(df_diagnostic_results)
+
+
+```
+
+# Retrieve commodity ID
+
+If you are using mvw_diagnostic_results it will have commodity info
+
+```{r sort by commodity}
+df_diagnostic_results |> 
+  mutate(COMMODITY_TAXONOMIC_DISPLAY_NAME = tolower(COMMODITY_TAXONOMIC_DISPLAY_NAME)) |> 
+  filter(str_detect(
+    COMMODITY_TAXONOMIC_DISPLAY_NAME,
+    stringr::str_c(commodities,collapse = "|")
+    )
+    )
+```
+
+If you are using mvw_diagnostic_results_Current it will not have commodity info and you will have to conenct them yourself
+
+{I haven't finished this as of 6/13/25}
+
+```{r retrieving commodity info}
+#### Pulling all commodity data, then filtering from there ----
+#Use that to select for commodities
+get.commodity = function(connection,
+                         commodity
+                         ) {
+  tbl(connection, sql( "SELECT TOP 10000
+                       *
+                       FROM [PPQ_AQI_ARMDMV2].[ARMDATADM].[SYS2_BRG_COMMODITY]")) |> 
+    filter(COMMODITY_COMMON_NAME %in% commodity |
+             COMMODITY_DISPLAY_NAME %in% commodity) |>
+    dplyr::select(
+      ID,
+      INSPECTION_ID,
+      DIAGNOSTIC_EVENT_ID,
+      QUANTITY,
+      QUANTITY_UNITS_NAME,
+      COMMODITY_HOST_TYPE,
+      DISPOSITION_CODE,
+      CBP_COMMODITY_ID_NUMBER,
+      INITIAL_COMMODITY_DISPLAY_NAME,
+      INITIAL_COMMODITY_TAXONOMIC_DISPLAY_NAME,
+      INITIAL_COMMODITY_COMMON_NAME,
+      COMMODITY_DISPLAY_NAME,
+      COMMODITY_TAXONOMIC_DISPLAY_NAME,
+      COMMODITY_COMMON_NAME,
+      TAXON_SIMPLE_NAME,
+      PROPAGATIVE_MATERIAL_TYPE,
+      FINAL_TAXON_SIMPLE_NAME,
+      DESTINATION_CITY,
+      SHIPMENT_IDENTIFIER_ID,
+      DIAGNOSTIC_EVENT_ID,
+      COUNTRY_OF_ORIGIN_ID, #these aren't complete records
+      COUNTRY_OF_ORIGIN_NAME, #these aren't complete records
+      QUARANTINE_RECOMMENDATION
+    ) |> 
+    collect() |> 
+    rename('COMMODITY_ID' = 'ID')
+}
+
+commodities = get.commodity(connection = db_conn)
+```
+
+# Connect diagnostic info to commodity ID
+
+```{r connect pest determination to commodity info}
+
+df_diagnostic_results |> left_join(commodities, by=c('COMMODITY_ID'))
+
+```
