@@ -141,7 +141,7 @@ message("After filtering by F280 pathways: ", nrow(shipment_records), " shipment
 #If it was engaged by a pathway_manifest (combination of both commodities and their origin country) instead of a specific port or region (e.g., applying to a manifest), then it won't be filtered again at this stage because it doesn't need to be
 ```
 
-
+# NOTE: Delete below function; old FO method functions are deprecated
 ```{r retrieve inspections/commodities data, eval=FALSE}
 
 db_conn <- connect_db()

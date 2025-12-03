@@ -30,7 +30,7 @@ program_scores:
 
 # Database Settings
 database:
-  limit_records: 10000  # Set to NULL for no limit
+  limit_records: NULL  # Set to NULL for no limit
   
 # Filtering (optional)
 filters:
@@ -38,6 +38,7 @@ filters:
   commodities: NULL  # e.g., ["Mango", "Apple"] or NULL for all
   pathways: NULL  # e.g., ["Air", "Sea"] or NULL for all
   origins: NULL  # e.g., ["Mexico", "China"] or NULL for all
+  commodity_types: NULL  # e.g., ["CF", "FV"] (cut flowers, fruits & vegetables) or NULL for all
 
 # Analysis Options
 analysis:

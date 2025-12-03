@@ -241,7 +241,8 @@ get_inspections = function(connection,
   
   "INSPECTION_DATETIME",
   "INSPECTION_LOCATION_ID",
-  "COUNTRY_OF_ORIGIN_NAME")
+  "COUNTRY_OF_ORIGIN_NAME",
+  "INSPECTION_METHOD_NAME")
 
   # Apply origin country filter if provided
   if (!is.null(origin_country)) {
