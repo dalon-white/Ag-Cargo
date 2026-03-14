@@ -252,7 +252,7 @@ get_inspections = function(connection,
 
   # Apply date filter (always applied)
   query <- query %>%
-    dplyr::filter(INSPECTION_DATETIME >= date_start & INSPECTION_DATETIME <= date_end)
+    dplyr::filter(INSPECTION_DATETIME >= !!date_start & INSPECTION_DATETIME <= !!date_end)
 
   # Collect data from server
   result <- query %>%
@@ -861,13 +861,17 @@ get_OPEP <- function(connection){
   query <- dplyr::tbl(connection, dplyr::sql(
     "SELECT * FROM [PPQ_ST_PPRA].[dbo].[OPEP_Data]"
   )) |>
-  #Unfinished OPEP pests should be filtered out on the data upload but there might be a problem with that step of my upload function, so lets just keep this in here for now.
-  dplyr::filter(!Predicted.pest.impact.in.US %in% c('N/A','Undetermined')) |> 
-  #collect the data
-  dplyr::collect()
+  dplyr::collect() |>
+  #Unfinished OPEP pests should be filtered out on the data uploaded from the PPRA list - J means not a candidate/not finished
+  dplyr::filter(!Risk.Category %in% c('N/A','J')) |> 
+  #filter any that do not have values for the predicted pest impacts - these are likely to be pests that haven't been fully evaluated yet
+  dplyr::filter(if_any(ends_with('Impact.Pest'), ~ !is.na(.)))
   
   #make sure the probabilities come in as numbers
-  query <- query |> mutate(across(starts_with('Prob.pest'), readr::parse_number))
+  query <- query |> 
+  mutate(
+    across(
+      ends_with('Impact.Pest'), ~if (is.character(.)) readr::parse_number(.) else .))
 
   return(query)
   message("Loaded", nrow(query), "OPEP records")

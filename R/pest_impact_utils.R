@@ -88,51 +88,41 @@ adjust_FNW_pest_impact <- function(
 #' @param opep_data Raw OPEP dataframe from get_OPEP()
 #' @return Diagnostic data with OPEP risk scores added in 'Predicted_pest_impact_in_US' column
 #' @export
-integrate_opep_impacts <- function(diagnostic_data, opep_data) {
+integrate_opep_impacts <- function(diagnostic_data, opep_data,
+                                  high_impact_weight = 1,
+                                  mod_impact_weight = 0.5,
+                                  low_impact_weight = 0) {
   
   # Step 1: Clean and prepare OPEP data
   message("Processing OPEP data...")
-  
+
   opep_processed <- opep_data %>%
     # Clean whitespace from names
     dplyr::mutate(
-      Scientific.name = trimws(Scientific.name),
+      Scientific.name = trimws(Scientific.Name),
       Common.Name = trimws(Common.Name)
     ) %>%
     # Filter out incomplete records
     dplyr::filter(
-      !Scientific.name == '',
-      !Predicted.pest.impact.in.US %in% c('N/A', 'Undetermined')
-    )
-    # Step 2: Extract genus and species for arthropods only
-  # (Pathogens are matched by full scientific name instead)
-  opep_with_taxonomy <- opep_processed %>%
-    dplyr::mutate(
-      Genus = dplyr::case_when(
-        Model == 'Arthropod' ~ stringr::word(Scientific.name, 1),
-        Model == 'Pathogen' ~ NA_character_,
-        .default = NA_character_
-      ),
-      Species = dplyr::case_when(
-        Model == 'Arthropod' ~ stringr::word(Scientific.name, 2),
-        Model == 'Pathogen' ~ NA_character_,
-        .default = NA_character_
-      )
+      #There shouldn't be any blank scientific names, but just in case, we will filter those out to avoid false matches
+      !Scientific.Name == '',
+      #Remove any records without impact ratings - OPEPs of these were not completed and there is no valid number to fill this impact score with
+      !Predicted.Impact.Category %in% c('N/A', 'Undetermined')
     )
   
   # Step 3: Calculate quantitative impact scores (0-1 scale)
   # Uses the calc_OPEP_pest_impact function to weight high/moderate/low probabilities
-  opep_with_scores <- opep_with_taxonomy %>%
+  opep_with_scores <- opep_processed %>%
     dplyr::mutate(
       OPEP_impact_quantitative = calc_pest_impact(
 
-        high_impacts = Prob.pest.will.cause.high.impacts,
+        high_impacts = High.Impact.Pest,
         high_impact_weight = high_impact_weight,
 
-        mod_impacts = Prob.pest.will.cause.mod.impacts,
+        mod_impacts = Moderate.Impact.Pest,
         mod_impact_weight = mod_impact_weight,
 
-        low_impacts = Prob.pest.will.cause.low.impacts,
+        low_impacts = Low.Impact.Pest,
         low_impact_weight = low_impact_weight
       )
     )
@@ -145,9 +135,9 @@ integrate_opep_impacts <- function(diagnostic_data, opep_data) {
     ) %>%
     # Select columns needed for matching (both qualitative and quantitative)
     dplyr::select(
-      Scientific.name,
+      Scientific.Name,
       Common.Name,
-      Predicted.pest.impact.in.US,      # Qualitative (High/Moderate/Low)
+      Predicted.Impact.Category,      # Qualitative (High/Moderate/Low)
       OPEP_impact_quantitative,         # Quantitative (0-1 scale)
       name.match
     )
@@ -163,19 +153,19 @@ integrate_opep_impacts <- function(diagnostic_data, opep_data) {
     # Filter out 'NA NA' to avoid false matches
     dplyr::left_join(
       opep_final %>% dplyr::filter(name.match != 'NA NA') %>%
-        dplyr::select(name.match, Predicted.pest.impact.in.US, OPEP_impact_quantitative),
+        dplyr::select(name.match, Predicted.Impact.Category, OPEP_impact_quantitative),
       by = "name.match",
       suffix = c("", ".genus_species")
     ) %>%
     # Match 2: Scientific name exact match
     dplyr::left_join(
-      opep_final %>% dplyr::select(Scientific.name, Predicted.pest.impact.in.US, OPEP_impact_quantitative),
-      by = c("PEST_TAXONOMIC_NAME" = "Scientific.name"),
+      opep_final %>% dplyr::select(Scientific.Name, Predicted.Impact.Category, OPEP_impact_quantitative),
+      by = c("PEST_TAXONOMIC_NAME" = "Scientific.Name"),
       suffix = c("", ".sci_name")
     ) %>%
     # Match 3: Common name match
     dplyr::left_join(
-      opep_final %>% dplyr::select(Common.Name, Predicted.pest.impact.in.US, OPEP_impact_quantitative),
+      opep_final %>% dplyr::select(Common.Name, Predicted.Impact.Category, OPEP_impact_quantitative),
       by = c("PEST_TAXONOMIC_NAME" = "Common.Name"),
       suffix = c("", ".comm_name")
     ) %>%
@@ -183,9 +173,9 @@ integrate_opep_impacts <- function(diagnostic_data, opep_data) {
     dplyr::mutate(
       # Qualitative impact (High/Moderate/Low)
       Predicted_pest_impact_in_US = dplyr::coalesce(
-        Predicted.pest.impact.in.US,           # From genus-species match
-        Predicted.pest.impact.in.US.sci_name,  # From scientific name match
-        Predicted.pest.impact.in.US.comm_name  # From common name match
+        Predicted.Impact.Category,           # From genus-species match
+        Predicted.Impact.Category.sci_name,  # From scientific name match
+        Predicted.Impact.Category.comm_name  # From common name match
       ),
       # Quantitative impact score (0-1 scale)
       OPEP_score = dplyr::coalesce(
@@ -196,18 +186,18 @@ integrate_opep_impacts <- function(diagnostic_data, opep_data) {
     ) %>%
     # Keep OPEP impact columns before cleaning up (for reference/debugging)
     dplyr::mutate(
-      OPEP_impact_qualitative_genus_species = Predicted.pest.impact.in.US,
-      OPEP_impact_qualitative_sci_name = Predicted.pest.impact.in.US.sci_name,
-      OPEP_impact_qualitative_comm_name = Predicted.pest.impact.in.US.comm_name,
+      OPEP_impact_qualitative_genus_species = Predicted.Impact.Category,
+      OPEP_impact_qualitative_sci_name = Predicted.Impact.Category.sci_name,
+      OPEP_impact_qualitative_comm_name = Predicted.Impact.Category.comm_name,
       OPEP_impact_quantitative_genus_species = OPEP_impact_quantitative,
       OPEP_impact_quantitative_sci_name_match = OPEP_impact_quantitative.sci_name,
       OPEP_impact_quantitative_comm_name_match = OPEP_impact_quantitative.comm_name
     ) %>%
     # Clean up intermediate matching columns only
     dplyr::select(
-      -Predicted.pest.impact.in.US,
-      -Predicted.pest.impact.in.US.sci_name,
-      -Predicted.pest.impact.in.US.comm_name,
+      -Predicted.Impact.Category,
+      -Predicted.Impact.Category.sci_name,
+      -Predicted.Impact.Category.comm_name,
       -OPEP_impact_quantitative,
       -OPEP_impact_quantitative.sci_name,
       -OPEP_impact_quantitative.comm_name,
@@ -223,6 +213,7 @@ integrate_opep_impacts <- function(diagnostic_data, opep_data) {
   
   return(result)
 }
+
 
 #' Integrate FNW Risk Scores
 #' 
@@ -357,7 +348,7 @@ integrate_hli_impacts <- function(pest_taxonomy_data, hli_data) {
 #' @param nonquarantine_value Score for non-quarantine pests
 #' @return Diagnostic data with final pest.risk scores
 #' @export
-calculate_pest_impact <- function(diagnostic_data, quarantine_value = 0.5, 
+parse_pest_impact <- function(diagnostic_data, quarantine_value = 0.5, 
                                uncategorized_value = 0.25, nonquarantine_value = 0) {
   result <- diagnostic_data %>%
     dplyr::mutate(

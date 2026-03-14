@@ -20,6 +20,7 @@ gather_diagnostics <- function(
   diagnostic_determinations,
   failed_determinations,
   enumerated_life_stages,
+  
   pest_taxonomy) {
 
   # Join determinations by DIAGNOSTIC_REQUEST_ID

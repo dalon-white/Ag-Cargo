@@ -109,6 +109,7 @@ HLI <- get_HLI(connection = ppra_conn)
 OPEP <- get_OPEP(connection = ppra_conn) 
 ```
 
+
 # Integrate pest risk into shipment information
 ## Append our lists to shipment information
 ```{r integrate pest assessments}
@@ -141,7 +142,7 @@ complete_records <- complete_records |> get_quarantine_status()
 Parsing through the different areas of pest impact
 ```{r calculate final pest risk scores}
 # Calculate final risk scores using package function
-complete_records <- calculate_pest_impact(
+complete_records <- parse_pest_impact(
   complete_records,
   quarantine_value = quarantine_pest_value,
   uncategorized_value = uncategorized_pest_value,
